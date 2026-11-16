@@ -32,3 +32,4 @@ All discussions live in `convos/{user}/`. **When starting a new topic, add a row
 | Date | User | Topic | Status | SUMMARY | LOG |
 |------|------|-------|--------|---------|-----|
 | 26-11-15 | julian | Project setup | Done; template configured | [SUMMARY](convos/julian/26-11-15_project_setup_SUMMARY.md) | [LOG](convos/julian/26-11-15_project_setup_LOG.md) |
+| 26-11-16 | julian | Public research log | Google Doc created and shared by link; adding entries needs the Google Docs connector | [SUMMARY](convos/julian/26-11-16_public_research_log_SUMMARY.md) | [LOG](convos/julian/26-11-16_public_research_log_LOG.md) |

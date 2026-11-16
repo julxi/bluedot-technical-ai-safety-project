@@ -5,3 +5,5 @@ A list of problems with the documentation or workflow, noted by agents (or human
 Entry format: date, what went wrong (or what friction occurred), and — where possible — a concrete suggestion: which file should say what, so the next agent doesn't hit the same problem.
 
 ---
+
+- **26-11-16, Claude Opus 5.5 — judged a tool's limits from the connectors loaded in one session.** In `convos/julian/26-11-16_public_research_log_LOG.md`, I told Julian that "one Google Doc" couldn't be maintained by agents. The Google Drive connector can't edit an existing doc, but the google-workspace skill (which I hadn't loaded yet) says a separate Google Docs connector can. That pushed my recommendation toward a worse option. Suggestion: when judging whether a tool or service can do something, load the matching skill or tool guide first. Report a limit as "not possible with the connectors enabled in this session", not "not possible".
