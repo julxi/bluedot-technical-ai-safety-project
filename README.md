@@ -14,7 +14,7 @@ Private records (`convos/julian/private/`) are not set up yet. Julian chose to s
 
 ## Current status and goals
 
-- Choose the project topic.
+- Choose the project topic. One candidate is under evaluation: RLVR side-effects and instrumental convergence on the Olmo 3 checkpoints (see the Conversation Index).
 
 ## Maintenance
 
@@ -33,3 +33,4 @@ All discussions live in `convos/{user}/`. **When starting a new topic, add a row
 |------|------|-------|--------|---------|-----|
 | 26-11-15 | julian | Project setup | Done; template configured | [SUMMARY](convos/julian/26-11-15_project_setup_SUMMARY.md) | [LOG](convos/julian/26-11-15_project_setup_LOG.md) |
 | 26-11-16 | julian | Public research log | Google Doc created and shared by link; adding entries needs the Google Docs connector | [SUMMARY](convos/julian/26-11-16_public_research_log_SUMMARY.md) | [LOG](convos/julian/26-11-16_public_research_log_LOG.md) |
+| 26-11-16 | julian | RLVR side-effects and instrumental convergence (candidate topic) | Feasibility check done; core experiment already published (arXiv 2610.31624), replication-with-better-protocol recommended; waiting on Julian's budget and choice of angle | [SUMMARY](convos/julian/26-11-16_rlvr_instrumental_convergence_SUMMARY.md) | [LOG](convos/julian/26-11-16_rlvr_instrumental_convergence_LOG.md) |
