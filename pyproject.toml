@@ -4,4 +4,24 @@ version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.14"
-dependencies = []
+dependencies = [
+    "fire>=0.7.1",
+    "inspect-ai>=0.3.291",
+    "openai>=3.55.0",
+    "pydantic>=2.14.3",
+    "python-dotenv>=1.2.4",
+    "pyyaml>=6.0.3",
+]
+
+[project.scripts]
+# Rent and prepare a vast.ai GPU; see src/ic_eval/vast.py.
+ic-vast = "ic_eval.vast:cli"
+
+[build-system]
+# Makes `uv sync` install src/ic_eval/ (editable) and create the ic-vast command in .venv/bin.
+requires = ["uv_build>=0.10.9,<0.11"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+# The distribution is named after the repo, the importable package is ic_eval.
+module-name = "ic_eval"

@@ -76,4 +76,17 @@ Structure hints:
 
 > Put additional instructions here, based on the needs of the project and the policies of the user or their company: preferred languages and frameworks, API-call patterns, data-handling and provider policies, testing standards, CI conventions. The template deliberately leaves this open — these choices are yours.
 
-- **One project, at the repo root** (decided by Julian 26-11-18; see `convos/julian/26-11-18_local_olmo_inspect_LOG.md`, entry *code layout: one project at the repo root*). This repository holds a single coding project, so the `projects/<name>/` layout under §Project Structure does not apply. Code lives at the root: `pyproject.toml` (managed with `uv`), `src/instr_eval/` for the package, `tasks/` for Inspect tasks, with `.venv/`, `.env` and `logs/` at the root. Don't create a `projects/` folder.
+- **One project, at the repo root** (decided by Julian 26-11-18; see `convos/julian/26-11-18_local_olmo_inspect_LOG.md`, entry *code layout: one project at the repo root*). This repository holds a single coding project, so the `projects/<name>/` layout under §Project Structure does not apply. Code lives at the root: `pyproject.toml` (managed with `uv`), `src/ic_eval/` for the package (Julian renamed it from `instr_eval` on 26-11-18), `tasks/` for Inspect tasks, with `.venv/`, `.env` and `logs/` at the root. Don't create a `projects/` folder.
+
+## Rented vast.ai GPUs
+
+Rent with `uv run ic-vast rent` (`src/ic_eval/vast.py`; usage in its module docstring). It writes the ssh alias `bluedot-vast` and arms a self-destruct timer on the instance (`ic-vast timer`). Design and history: `convos/julian/26-11-18_vast_gpu_runner_SUMMARY.md`.
+
+- **Secrets take a secure route, always** (decided by Julian 26-11-18, same LOG, answer E1). Secrets go to a rented machine only over ssh, on the command's stdin (e.g. into a mode-600 file under `/etc/profile.d/`). Never send them through vast.ai's instance settings (`vastai create --env`, which vast.ai stores on its servers), command-line arguments (visible in process lists), git, logs, or the synced working tree. Any other route only with Julian's explicit authorisation.
+- The rules below were carried over from Julian's targeted-parameter-decomposition repo, where each cost time once:
+  - **Check the GPU's power limit after renting.** `ic-vast rent` prints it. In the other repo, an H100 capped at 500 W ran 40% slower than one at ~600 W.
+  - **Launch remote commands as a login shell**: `ssh bluedot-vast 'bash -lc "<cmd>"'`. A plain `ssh bluedot-vast '<cmd>'` skips `/etc/profile.d/`, so secrets installed there are missing.
+  - **Detach long jobs** with `ssh -n -f bluedot-vast 'setsid nohup <cmd> > <log> 2>&1 < /dev/null &'`. Without `-f`, the local ssh call can hang until the remote job ends. Don't chain other commands after a launch call.
+  - **Kill by a bracket pattern or PID**: `pkill -f "[v]llm serve"`. A plain `pkill -f "vllm serve"` inside `ssh bluedot-vast '...'` matches its own command line and kills the ssh session. Kill-then-relaunch in one call still matches the relaunch text, so run the kill in a call of its own.
+  - **Wall times are only comparable on the same machine.** Compare speed with measurements from one instance.
+  - **Compare the container's CPU quota with `nproc`** (`cat /sys/fs/cgroup/cpu.max`; `ic-vast rent` prints both). A container allowed 23 CPUs on a 192-core host throttled jobs that started one thread per core; cap `OMP_NUM_THREADS` to the quota.

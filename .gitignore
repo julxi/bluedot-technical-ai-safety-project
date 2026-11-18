@@ -5,7 +5,8 @@
 convos/*/private/
 convos/*/private
 
-# Working files of the error-injection review procedure (docs/procedures/code_review.md)
+# Local working files never committed: the error-injection review procedure
+# (docs/procedures/code_review.md), and task-local notes such as scratch/vast_test_slow_hosts.txt
 scratch/
 
 # Secrets

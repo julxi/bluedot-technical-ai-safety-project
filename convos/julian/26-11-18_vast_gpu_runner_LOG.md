@@ -60,7 +60,8 @@ C: you write
 
 **A2 (blocking). How much of the SPD launcher to port?**
 - (a) Nearly all of section 1: blacklist with auto-destroy, walking down offers, boot/ssh/`uv sync` timeouts, clone-then-rsync sync, all modes, dry run, `--offer_id`. Drop WandB, the experiment registry and the `papers/` special case.
-- (b) A slim version, about 300 lines: search, rent, ssh, sync, destroy. No blacklist, no timeouts.  
+- (b) A slim version, about 300 lines: search, rent, ssh, sync, destroy. No blacklist, no timeouts.
+
 C: (a)
 
 Recommendation: (a). Each guard in it came from a lost hour or a billing instance; (b) would re-learn those lessons at your cost.
@@ -296,3 +297,79 @@ Next step: wait for your answers, then write the implementation plan as a new en
 3. Anything to change in the plan, e.g. the default timer lengths? If not: go, and I implement and run the free steps, then the test rental.
 
 Sources (vast.ai docs, read 26-11-18): https://docs.vast.ai/guides/instances/docker-environment, https://docs.vast.ai/api-reference/hello-world, https://docs.vast.ai/cli/reference/destroy-instance, https://docs.vast.ai/vllm-llm-inference-and-serving
+
+C: I changed the structure. `instr_eval` is now `ic_eval`  
+C: Ok, F2 is alright  
+C: B2 and G1 are fine.
+
+---
+
+26-11-18, Claude Opus 5.5 — *launcher implemented; free checks; before the test rental*; context: Julian's three comments above, the plan entry, the SPD launcher.
+
+**Implemented** (not committed):
+- `src/ic_eval/vast.py`: command `ic-vast` with subcommands `rent`, `offers`, `timer`. Subcommands rather than the plan's flags, so a bare `ic-vast` only prints help and never spends money. The command is named after the package, since Julian renamed `instr_eval` to `ic_eval`.
+- Configs `src/ic_eval/vast_configs/7b.yaml` and `32b.yaml`, and an empty `blacklist.yaml`.
+- `pyproject.toml`: `[project.scripts]`, a `[build-system]` with `uv_build` and `module-name = "ic_eval"`, and the dependencies fire, pydantic, pyyaml, python-dotenv (`uv add`; `uv.lock` updated).
+- `docs/CODING.md`: §*Rented vast.ai GPUs* (the secrets rule and the SPD repo's job rules), and the package name `ic_eval` in the layout line.
+- Deviations from the plan:
+  - Any failure before the watchdog runs destroys the instance from the laptop. The SPD launcher left "our" failures running. Here nothing else would stop them.
+  - The watchdog is Python (standard library only), not shell. It calls vast.ai's REST API with `CONTAINER_API_KEY`.
+  - `instance.json` on the instance holds the price, so `ic-vast timer` can show the remaining cost.
+  - `ssh -G` checks that ssh actually resolves the alias. A missing `Include` would otherwise look like a host failure and blacklist an innocent host.
+  - The offer search asserts that every returned GPU is in `gpu_names`.
+
+**Free checks** [verified: run 26-11-18]:
+- `ruff check` and `ruff format`: clean. basedpyright: 0 errors; 103 warnings from its strict defaults (mostly `Any` from vastai's JSON).
+- The watchdog source parses as Python 3.8.
+- Both configs load; the duration parser rejects `3`, `'3'`, `'2d'` and `'0.5m'`.
+- `ic-vast offers`: 20 offers for `7b` from $0.474/h, 6 for `32b` from $4.397/h.
+- `ic-vast rent --dry_run` stops, as intended, on the unpushed HEAD (local `main` 2 commits ahead of origin).
+- Found: the three cheapest `7b` offers are on hosts 124072 and 135676. Both are on the SPD repo's blacklist with "not running after 900s".
+
+C: (transcribed from chat) [selected option] "You may push main" — in answer to how local HEAD gets pushed before the test rental.
+C: (transcribed from chat) [selected option] "Keep empty, skip via --offer_id" — in answer to what the test does about SPD-blacklisted hosts 124072 and 135676.
+
+---
+
+C: (transcribed from chat) No, Image pulling can be really fast on some hosts. This host is just slow. I have further plans for the blacklists that make this better, but we don't do it there. If a host gets blacklistet just use another one, that's fine. Actually for this test I'd like you to be quite agressive in weeding out slow hosts (you can keep your own blacklist for this task if you need).
+
+C: (transcribed from chat) can you create a gitignored scratch folder in this repo and keep the list there
+
+---
+
+26-11-18, Claude Opus 5.5 — *test rentals: launcher works, timer destroys the instance, container restart kills the watchdog (fixed, untested)*; context: this LOG, the launcher output of both rentals, read-only inspection of the second instance.
+
+**Rental 1, aborted** (instance 61289926, offer 40187939, L40, host 169171, Vietnam):
+- [verified: launcher log] Rented at 18:06:44. The `vastai/vllm` image (10.86 GB compressed for amd64 [verified: Docker Hub API]) was still being pulled at 18:18:22, 11.5 min in.
+- Per Julian's comments above, I stopped the launcher and destroyed the instance by hand ("destroying instance 61289926.", none left running).
+- The host is on a test-only skip list, `scratch/vast_test_slow_hosts.txt`, together with the SPD repo's 10 blacklisted hosts. `scratch/` was already gitignored; its `.gitignore` comment now says it is for local working files generally. This repo's blacklist stays empty.
+- Fixed meanwhile: `--offer_id` showed the price for vast.ai's default 5 GB disk ($0.456/h) instead of the 80 GB we rent ($0.490/h). The lookup now passes `--storage`.
+
+**Rental 2** (instance 61292124, offer 51338031, A40 48 GB, host 682584, Belgium, $0.702/h including disk, chosen for its advertised 9.4 Gbit/s):
+- [verified: launcher log] Rented 18:20:15; image pulled by about 18:24:30; vast.ai's own build step (apt-get) until 18:26:20; running 18:26:31; ssh accepted the key within seconds; watchdog check passed and the timer was set to 3 h at 18:26:47-48; clone + rsync done; summary at 18:26:52. **6.5 min from renting to ready.**
+- Summary values: GPU power limit 300 W (the A40's full rating), CPU quota 61.2 CPUs of `nproc` 255.
+- [verified: read-only inspection 26-11-18]
+  - The bare image does **not** start a vLLM server: no vllm process, no supervisor, GPU memory 0 MiB, no `VLLM_MODEL` set. vast.ai starts it through its ssh launch script (`bash /.launch`), not the template's.
+  - vLLM 0.34.0 (package metadata); Python 3.12.3; `uv`, `vastai`, git and rsync present.
+  - `CONTAINER_ID` and `CONTAINER_API_KEY` are **not** in ssh sessions, only in PID 1's environment. So the watchdog reading `/proc/1/environ` was necessary.
+  - The launch script also writes `CONTAINER_API_KEY` to `~/.vast_api_key`.
+  - The repo arrived at `afebdf6` with the local uncommitted changes showing as such.
+- **The timer works** [verified: one test]. `ic-vast timer` showed the deadline and cost; `timer off` removed the deadline; `timer 2m` at 18:27:47 set 18:29:47. vast.ai reported the instance gone (`{"instances": null}`) at 18:30:26, with laptop polls every ~16 s. The REST call with the per-instance key works for both the check (`PUT state=running`) and the destroy (`DELETE`).
+
+**Found and fixed, not yet tested:**
+- The container **restarted** at 17:27:19 UTC (PID 1's start time), 27 s after the launcher finished. This cut my inspection's ssh session ("closed by remote host") and killed the watchdog. `/root` survived. The first `ic-vast timer` call reported the watchdog dead and restarted it, as designed. Without that call, the 3 h timer would never have fired. Why the container restarted is unknown. My `vllm --version` was running at that moment; I think it is unlikely to be the cause, but I did not check.
+- Fix: the launcher now also appends the watchdog's start command to `/root/onstart.sh`, which vast.ai's `/.launch` runs on every container start. It uses the absolute `python3` path, because onstart runs with PID 1's environment. This needs one more rental to verify, e.g. with `vastai reboot instance`.
+
+**Cost of both rentals:** about $0.20-0.25 [assumed: from 12 min at $0.49/h and 10 min at $0.70/h; billing not checked].
+
+---
+
+C: (transcribed from chat) I think I'd like the configs to be more technical named not by the model
+
+---
+
+26-11-18, Claude Opus 5.5 — *configs renamed by hardware*; context: the comment above.
+
+Renamed `src/ic_eval/vast_configs/7b.yaml` → `48gb.yaml` (still the default) and `32b.yaml` → `h200.yaml`, following the SPD repo's hardware names (`h100`, `a100`). The model sizes stay in each file's header comment as the reason for the card class. Updated `DEFAULT_CONFIG`, the docstrings and the YAML comments. [verified: `ic-vast offers` with both new names; `--config 7b` now fails, listing `48gb, h200`.]
+
+Also answered in chat: `openai` stays in `dependencies`. inspect-ai doesn't depend on it, but Inspect's vLLM provider and its `openai-api/...` provider import it [verified: `uv.lock`; inspect_ai `model/_providers/vllm.py` line 10].
