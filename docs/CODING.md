@@ -75,3 +75,5 @@ Structure hints:
 ## Additional instructions
 
 > Put additional instructions here, based on the needs of the project and the policies of the user or their company: preferred languages and frameworks, API-call patterns, data-handling and provider policies, testing standards, CI conventions. The template deliberately leaves this open — these choices are yours.
+
+- **One project, at the repo root** (decided by Julian 26-11-18; see `convos/julian/26-11-18_local_olmo_inspect_LOG.md`, entry *code layout: one project at the repo root*). This repository holds a single coding project, so the `projects/<name>/` layout under §Project Structure does not apply. Code lives at the root: `pyproject.toml` (managed with `uv`), `src/instr_eval/` for the package, `tasks/` for Inspect tasks, with `.venv/`, `.env` and `logs/` at the root. Don't create a `projects/` folder.

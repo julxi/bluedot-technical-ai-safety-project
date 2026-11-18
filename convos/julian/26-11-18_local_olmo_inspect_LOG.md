@@ -128,6 +128,8 @@ curl -s localhost:8080/v1/chat/completions -H 'Content-Type: application/json' -
 
 ## Step 4 — Project folder and Python environment (about 15 minutes)
 
+OUTDATED (26-11-18, Claude Opus 5.5): the `projects/instrumental_eval/` layout below. Julian decided the code lives at the repo root; see the entry *code layout: one project at the repo root* at the bottom of this file.
+
 `docs/CODING.md` says each coding project lives in `projects/<name>/`. Suggested name: `projects/instrumental_eval/`.
 
 ```
@@ -251,3 +253,68 @@ A second scorer that sends task, response and judge context to a judge model and
 Open questions for you:
 - Is `projects/instrumental_eval/` fine as the folder name?
 - Do you want to do steps 1-3 now and report back what step 3 showed (reasoning field, speed)? Steps 5-7 depend on it.
+
+---
+
+C: (transcribed from chat) This is a deliberate change. This should go in a log and be updated. There is no `projects` folder. There is only one project (the root)
+
+---
+
+26-11-18, Claude Opus 5.5 — *code layout: one project at the repo root*; context: this LOG, `docs/CODING.md`, and a look at the repo root (`ls`, `git status`, `git ls-files`)
+
+[decided: Julian's transcribed comment above] This repository is a single project, and its code lives at the **repo root**, not under `projects/<name>/` as `docs/CODING.md`'s example layout suggests. This replaces step 4 of the guide.
+
+What is at the root now, set up by Julian [verified: listed 26-11-18]:
+- `pyproject.toml`: created with `uv init` (commit `0e589b4`). Package name `bluedot-technical-ai-safety-project`, `requires-python >= 3.14`, dependency `inspect-ai >= 0.3.291`. Managed with `uv`, so `uv add` / `uv sync` replace the guide's `uv pip install -e .`.
+- `.python-version`, `main.py` (from `uv init`), `uv.lock`.
+- `.venv/` at the root, already gitignored.
+- `src/instr_eval/` (empty so far), `tasks/hello.py`, `logs/` (empty).
+
+Follow-ups for the guide's later steps (not done, Julian asked me not to write findings yet):
+- `.env` goes at the root; the root `.gitignore` already excludes it.
+- Step 6 caches the benchmark CSV. Its folder, e.g. `data/input/`, needs a `.gitignore` entry, because the InstrumentalEval repository has no licence.
+- Decide whether Inspect's `logs/` is committed. `.eval` files can get large, and they contain full transcripts.
+
+`docs/CODING.md` §Additional instructions now records the root layout, so future sessions don't recreate `projects/`.
+
+C: Ok, I did enough, so that I would like to move to a gpu now and maybe also use vLLM framework itself. What are the pros cons to llamacpp?
+
+Answer (26-11-18, Claude Opus 5.5): Context: this LOG, our chat during steps 1-5, and the Olmo 3 paper and vLLM facts from the RLVR LOG. I ran nothing.
+
+**What the local phase showed**, as relevant to this comparison:
+- [verified: Julian's runs 26-11-18, llama.cpp Vulkan build b12502, Q4_K_M] Generation runs at 14-16 tokens/s.
+- [verified: Julian's runs 26-11-18] `--reasoning-format deepseek` did not separate Olmo's thinking: everything landed in `content`, with only the closing `</think>`. We split it ourselves in `tasks/hello.py`.
+- [verified: Julian's runs 26-11-18] A 1,500-token cap cut off the thinking on "What is 17 * 23?".
+- [verified: Olmo 3 tokenizer config 26-11-18] `<think>` and `</think>` are ordinary text, not special tokens.
+
+**vLLM: for**
+- **Original weights, any checkpoint.** It loads Ai2's unquantized safetensors directly, and `--revision <branch>` picks any intermediate RLVR checkpoint. llama.cpp needs a GGUF file per checkpoint; ready-made ones exist only for SFT, DPO and final, so every RLVR step would need converting yourself (a 14.6 GB download plus a conversion run each).
+- **Closest to training.** Ai2 generated their RL responses with vLLM (Olmo 3 paper, Section 4.4.3), so this is how the model was actually run during RL.
+- **Throughput.** vLLM is built to run many sequences at once, with continuous batching and paged attention-cache memory. On a 48-80 GB card it can run tens of 7B responses in parallel. llama.cpp also batches over `-np` slots, but is generally slower at high parallelism. [assumed: common experience, not measured here]
+- **Same chat template.** It renders the repo's own `chat_template.jinja`, as llama.cpp did.
+- [verified: vLLM main branch 26-11-18] It has an `olmo3` reasoning parser. Whether that one handles the pre-opened `<think>` better than llama.cpp's is untested. Our own split works either way.
+- **Inspect support.** Inspect's `vllm/` provider can even start the server itself, or connect to one you started.
+- **Scales to the 32B**, split across two GPUs (tensor parallelism).
+
+**vLLM: against**
+- **NVIDIA (or AMD datacenter) GPUs only.** It won't run on your laptop, so development happens in two places: llama.cpp locally, vLLM on the rented machine.
+- **Heavy setup and slow start-up.** The install pulls several GB (PyTorch, CUDA libraries), and start-up compiles and pre-records GPU work, which takes minutes. [assumed] By default it reserves 90% of GPU memory.
+- **Defaults that differ silently.** vLLM reads sampling defaults from the model's `generation_config.json` (temperature 0.6, top-p 0.95 for Olmo) unless the request overrides them. [assumed: from memory of vLLM's behaviour; check the start-up log] So always pass temperature and top-p explicitly, as we already do.
+- **Behaviour changes between versions.** Pin one version and record it.
+
+**llama.cpp: for**
+- Runs anywhere: laptop, any GPU, even integrated ones. Small install, starts in seconds, and you already know it.
+- Compressed models fit smaller cards: the 32B at Q4 is about 19 GB, so it fits a 24 GB card. [assumed: estimated from the 7B ratio]
+- The `/apply-template` endpoint shows the rendered prompt.
+
+**llama.cpp: against**
+- **Compressed weights change the model.** Results aren't comparable with the papers or with the unquantized model. Using an uncompressed GGUF (F16/BF16) gives up the size advantage.
+- **Third-party conversions,** and DIY conversion for the intermediate checkpoints.
+- **Its reasoning parser didn't handle Olmo** (observed above).
+
+**Recommendation** [concluded: from the points above; not ratified]:
+- **vLLM on the GPU for all project data;** llama.cpp stays the laptop tool for developing tasks.
+- **The task code stays the same.** Only the model string changes: either `vllm/allenai/Olmo-3-7B-Think` (Inspect starts vLLM), or start `vllm serve` yourself and connect Inspect to it. I'd start it yourself: you see its log, choose its flags, and it keeps running between Inspect runs.
+- **For the 7B, an RTX A6000 (48 GB) on Vast** is the cheapest card with headroom: $0.35-0.48/h in the 26-11-18 snapshot, see the RLVR LOG. Vast offers ready-made vLLM machine images, so nothing needs installing by hand. [assumed: not checked which image or version]
+
+Open question for you: should I write a step-by-step guide for the GPU move in the same style as the laptop one? It would cover renting, the SSH tunnel, `vllm serve` with checkpoint branches, pointing Inspect at it, and stopping the machine.
