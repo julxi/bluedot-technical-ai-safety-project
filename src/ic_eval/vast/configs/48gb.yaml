@@ -1,0 +1,53 @@
+# Machine config `48gb` for `ic-vast` (the default; fields documented in MachineConfig in
+# src/ic_eval/vast/config.py). Every field can be overridden for one launch with the matching
+# flag, e.g. `ic-vast rent --max_price 1.5`.
+# One >= 44 GB card for Olmo 3 7B served with vLLM: its 14.6 GB of bf16 weights leave ~30 GB for
+# the attention cache, i.e. many long responses at once; a 24 GB card would leave ~8 GB.
+# The quality filters are deliberately loose (Julian, 26-11-18): the host model in model.py, fed
+# by our own rental history, decides which hosts are good. See
+# convos/julian/26-11-18_vast_host_selection_SUMMARY.md.
+
+# vast.ai GPU names, spaces as underscores. Browse with `ic-vast offers`. Left out on purpose
+# (26-11-18): GB10 (ARM with shared memory), CMP_170HX (mining card), Q_RTX_8000 (no bf16).
+gpu_names: [RTX_A6000, A40, L40, L40S, RTX_6000Ada, RTX_4090, A100_PCIE, A100_SXM4, RTX_PRO_5000]
+
+# Maximum total price in $/hour, including storage. A budget, not a quality filter.
+max_price: 1.2
+
+# Minimum GPU memory in GB (vast.ai filters in GB, reports in MB). Excludes 24 GB RTX 4090s.
+min_gpu_ram: 44
+
+# Disk to rent in GB: the image, plus 14.6 GB per 7B checkpoint downloaded from Hugging Face.
+disk: 80
+
+# vLLM preinstalled (Julian's choice). The exact tag records which vLLM version served a run:
+# change it deliberately, never to `latest`.
+image: vastai/vllm:v0.34.0-cuda-13.0
+
+# Loose on purpose (was 0.98): vast.ai's score only weeds out the worst; our data does the rest.
+min_reliability: 0.8
+
+# Advertised download in Mbit/s. Self-reported and loosely predictive (26-11-18: hosts advertising
+# 309 and 9415 Mbit/s pulled the image at 8.8 and 35 MB/s), so only a floor against absurd offers.
+min_inet_down: 10
+
+# Off (Julian, 26-11-18): unverified hosts are allowed; the model learns them like any other.
+verified_only: false
+
+datacenter_only: false
+
+# A host in China could not reach huggingface.co (DNS poisoned; SPD repo, 26-10-26), and every
+# rental downloads model weights from there.
+excluded_countries: [CN]
+
+# The image is built for CUDA 13.0, so the host's driver must support it.
+min_cuda: 13.0
+
+# The whole filtered market was ~51 offers on 26-11-18; the policy needs to see all of it.
+n_offers: 100
+
+# Self-destruct timer at rent time ('3h', '90m' or 'off'); change it later with `ic-vast timer`.
+timer: 3h
+
+# Planned session length in hours (`--hours` overrides): weighs price against setup time.
+hours: 2

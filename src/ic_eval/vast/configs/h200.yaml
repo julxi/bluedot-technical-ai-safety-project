@@ -1,5 +1,5 @@
-# Machine config `h200` for `ic-vast --config h200` (fields documented in VastConfig in
-# src/ic_eval/vast.py). Comments on fields shared with 48gb.yaml are there.
+# Machine config `h200` for `ic-vast --config h200` (fields documented in MachineConfig in
+# src/ic_eval/vast/config.py). Comments on fields shared with 48gb.yaml are there.
 # One H200 (140 GB) for Olmo 3 32B: 64.5 GB of weights on an 80 GB card would leave only ~9 GB of
 # attention cache (convos/julian/26-11-16_rlvr_instrumental_convergence_SUMMARY.md).
 
@@ -9,11 +9,13 @@ min_gpu_ram: 130
 # The image, plus 64.5 GB per 32B checkpoint.
 disk: 200
 image: vastai/vllm:v0.34.0-cuda-13.0
-min_reliability: 0.98
+min_reliability: 0.8
+min_inet_down: 10
+verified_only: false
 datacenter_only: false
 excluded_countries: [CN]
 min_cuda: 13.0
-sort: dph_total
-n_offers: 20
+n_offers: 100
 # Shorter than 48gb's: an H200 forgotten for an hour costs about as much as a 7B session.
 timer: 2h
+hours: 3

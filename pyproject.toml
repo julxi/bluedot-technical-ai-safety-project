@@ -14,8 +14,8 @@ dependencies = [
 ]
 
 [project.scripts]
-# Rent and prepare a vast.ai GPU; see src/ic_eval/vast.py.
-ic-vast = "ic_eval.vast:cli"
+# Rent and prepare vast.ai GPUs; see src/ic_eval/vast/cli.py.
+ic-vast = "ic_eval.vast.cli:cli"
 
 [build-system]
 # Makes `uv sync` install src/ic_eval/ (editable) and create the ic-vast command in .venv/bin.
@@ -25,3 +25,42 @@ build-backend = "uv_build"
 [tool.uv.build-backend]
 # The distribution is named after the repo, the importable package is ic_eval.
 module-name = "ic_eval"
+
+[dependency-groups]
+dev = [
+    "basedpyright>=1.40.2",
+    "pytest>=9.2.0",
+    "ruff>=0.17.5",
+]
+
+[tool.pytest.ini_options]
+# `uv run pytest` from the repo root. Tests never rent anything or call vast.ai: market and
+# remote calls are not exercised, the model and policy run on simulated data.
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"
+
+[tool.ruff]
+# Explicit settings, so results do not shift with ruff's changing defaults. `make check` runs
+# ruff check, `make format` fixes and formats.
+line-length = 100
+src = ["src", "tests", "tasks"]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle
+    "F",   # pyflakes
+    "UP",  # pyupgrade
+    "B",   # flake8-bugbear
+    "SIM", # flake8-simplify
+    "I",   # isort
+]
+
+[tool.basedpyright]
+include = ["src", "tests", "tasks"]
+typeCheckingMode = "standard"
+# Stricter than "standard" where it catches real mistakes cheaply.
+reportUnnecessaryComparison = true
+reportUnnecessaryCast = true
+reportMatchNotExhaustive = true
+reportUnusedExpression = true
+reportImportCycles = true

@@ -80,7 +80,9 @@ Structure hints:
 
 ## Rented vast.ai GPUs
 
-Rent with `uv run ic-vast rent` (`src/ic_eval/vast.py`; usage in its module docstring). It writes the ssh alias `bluedot-vast` and arms a self-destruct timer on the instance (`ic-vast timer`). Design and history: `convos/julian/26-11-18_vast_gpu_runner_SUMMARY.md`.
+Rent with `uv run ic-vast rent` (package `src/ic_eval/vast/`; all commands in `cli.py`'s module docstring), and end the session with `ic-vast destroy`, which records it before destroying. `rent` chooses the host with a Bayesian model of past rentals and re-rents automatically when a host is slow or fails. It writes the ssh alias `bluedot-vast` and arms a self-destruct timer on the instance (`ic-vast timer`).
+
+- Design and history: `convos/julian/26-11-18_vast_gpu_runner_SUMMARY.md` (renting, sync, timer) and `convos/julian/26-11-18_vast_host_selection_SUMMARY.md` (host choice).
 
 - **Secrets take a secure route, always** (decided by Julian 26-11-18, same LOG, answer E1). Secrets go to a rented machine only over ssh, on the command's stdin (e.g. into a mode-600 file under `/etc/profile.d/`). Never send them through vast.ai's instance settings (`vastai create --env`, which vast.ai stores on its servers), command-line arguments (visible in process lists), git, logs, or the synced working tree. Any other route only with Julian's explicit authorisation.
 - The rules below were carried over from Julian's targeted-parameter-decomposition repo, where each cost time once:
@@ -90,3 +92,15 @@ Rent with `uv run ic-vast rent` (`src/ic_eval/vast.py`; usage in its module docs
   - **Kill by a bracket pattern or PID**: `pkill -f "[v]llm serve"`. A plain `pkill -f "vllm serve"` inside `ssh bluedot-vast '...'` matches its own command line and kills the ssh session. Kill-then-relaunch in one call still matches the relaunch text, so run the kill in a call of its own.
   - **Wall times are only comparable on the same machine.** Compare speed with measurements from one instance.
   - **Compare the container's CPU quota with `nproc`** (`cat /sys/fs/cgroup/cpu.max`; `ic-vast rent` prints both). A container allowed 23 CPUs on a 192-core host throttled jobs that started one thread per core; cap `OMP_NUM_THREADS` to the quota.
+
+## Testing and checks
+
+Set up 26-11-18 at Julian's request.
+
+- **`make check` must pass before a code change is finished** (Julian, 26-11-18: linting is "part of dependencies and checked"). It runs, and changes nothing: `ruff format --check`, `ruff check`, `basedpyright` (0 errors and 0 warnings), and `pytest`. `make format` fixes what ruff can fix. ruff and basedpyright are dev dependencies; their settings live in `pyproject.toml` (`[tool.ruff]`, `[tool.basedpyright]`). Keep those settings explicit, so that a tool update cannot silently change what counts as clean.
+- Scope: `src/`, `tests/` and `tasks/` (Inspect tasks).
+- Run `uv run pytest` from the repo root. pytest is a dev dependency, configured in `pyproject.toml` (`[tool.pytest.ini_options]`).
+- Tests live in `tests/`, mirroring the package (`tests/vast/` for `src/ic_eval/vast/`). Shared fixtures go in each folder's `conftest.py`.
+- **Tests never rent, never call vast.ai, never spend money.** Code that talks to vast.ai or ssh (`market.py`, `remote.py`, `probes.py`) is checked on real rentals instead, and the result is recorded in the topic LOG. Pure logic (models, policies, parsers) gets unit tests. Behaviour over many decisions gets a simulation test, e.g. `src/ic_eval/vast/simulate.py`, a fake market with known truth.
+- Seed every random generator, so a test is deterministic. Choose thresholds that a correct implementation passes by a wide margin and a broken one clearly fails. Say in the test's docstring which bug it would catch.
+- Parsers get tests on real inputs copied from logs (e.g. vast.ai status messages), not invented ones.

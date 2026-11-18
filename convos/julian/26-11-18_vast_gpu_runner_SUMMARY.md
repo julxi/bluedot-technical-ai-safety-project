@@ -1,23 +1,22 @@
 # SUMMARY: vast.ai GPU launcher `ic-vast` (port of the SPD repo's `spd-vast`)
 
-**Last updated:** 26-11-18 (configs renamed by hardware; implemented; test rental passed, timer self-destroy verified; watchdog restart fix untested; nothing committed)
+**Last updated:** 26-11-18 (launcher rebuilt as a package with Bayesian host choice, see the host-selection topic; timer self-destroy verified; watchdog restart fix untested)
 
 Julian asked to set up vast.ai GPU rentals here the way his other project, `/home/jx/projects/targeted-parameter-decomposition` ("the SPD repo"), does them, adopt the relevant part of that repo's `docs/CODING.md`, and ask many questions first. The questions, Julian's `C:` answers and the plan are in the LOG.
 
 ## What exists (uncommitted)
 
-- **`src/ic_eval/vast.py`**, command `uv run ic-vast` (usage in its module docstring):
+- **Code: package `src/ic_eval/vast/`** since the host-selection topic rebuilt it (`vast.py` was split into modules; usage in `cli.py`). Command `uv run ic-vast`:
   - `ic-vast offers` lists matching offers and rents nothing.
   - `ic-vast rent [--script x.sh] [--config h200] [--timer 2h|off] [--offer_id N] [--dry_run]` rents and prepares a machine, and with `--script` runs that repo script on it.
   - `ic-vast timer [2h|90m|off]` shows or changes the self-destruct timer.
-  - Ported from the SPD launcher: the offer search, walking down unavailable offers, boot and ssh timeouts, the host blacklist with destroy on host failure, the destroy-output check, and code sync (GitHub clone plus rsync of the working tree; HEAD must be pushed).
+  - Ported from the SPD launcher: the offer search, walking down unavailable offers, boot and ssh timeouts, the destroy-output check, and code sync (GitHub clone plus rsync of the working tree; HEAD must be pushed). The host blacklist was first ported, then replaced by the rental history and host model of `convos/julian/26-11-18_vast_host_selection_SUMMARY.md`.
   - Dropped for now [decided: Julian's answers]: WandB, `uv sync` on the instance, the run/detached/sync modes, forwarding secrets.
-- **Configs** in `src/ic_eval/vast_configs/`:
+- **Configs**, now in `src/ic_eval/vast/configs/` (filters since loosened, see the host-selection topic):
   - `48gb.yaml` (default; sized for Olmo 3 7B): one of nine 44-48 GB card types, under $1.20/h, 80 GB disk, 3 h timer.
   - `h200.yaml` (sized for Olmo 3 32B): H200, under $7/h, 200 GB disk, 2 h timer.
   - Named by hardware, not by model [decided: Julian, chat 26-11-18, transcribed in the LOG]; first named `7b`/`32b`.
   - Both use `vastai/vllm:v0.34.0-cuda-13.0`, with vLLM preinstalled [decided: B3]. The pinned tag records the vLLM version, so vLLM stays out of `pyproject.toml`.
-  - `blacklist.yaml` is empty [decided: D2].
 - **Self-destruct timer** [decided: Julian's feature request]:
   - A Python watchdog on the instance destroys the instance once the deadline in `/root/self_destruct/destroy_at` has passed.
   - It uses vast.ai's per-instance key `CONTAINER_API_KEY`, which can only start, stop or destroy that instance, so no account key goes to the machine.
@@ -45,5 +44,6 @@ Julian asked to set up vast.ai GPU rentals here the way his other project, `/hom
 - A `vllm serve` script for `--script`, and pointing Inspect at it through the tunnel. Not done: Julian said "other checks come later".
 
 - LOG: `convos/julian/26-11-18_vast_gpu_runner_LOG.md` (entries *reference launcher survey and questions before implementing*, *implementation plan after Julian's answers*, *launcher implemented; free checks; before the test rental*, *test rentals: launcher works, …*)
+- See also: `convos/julian/26-11-18_vast_host_selection_SUMMARY.md` — replaced the blacklist with a Bayesian host model, four renting modes, speed-based abort with automatic re-rent, probes, and a testing setup.
 - See also: `convos/julian/26-11-18_local_olmo_inspect_SUMMARY.md` — the vLLM-vs-llama.cpp answer that motivated the move to a rented GPU; `tasks/hello.py` from there is the planned first real job.
 - See also: `convos/julian/26-11-16_rlvr_instrumental_convergence_SUMMARY.md` — hosting and price analysis, GPU sizing for the 7B and 32B models.

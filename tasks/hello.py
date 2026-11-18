@@ -25,16 +25,12 @@ def split_thinking(text: str, stop_reason: str) -> tuple[str, str | None]:
         raise ValueError(f"unexpected opening <think> in output: {text[:200]!r}")
     n_close = text.count(THINK_CLOSE)
     if n_close > 1:
-        raise ValueError(
-            f"{n_close} closing tags in output, expected at most 1: {text[:200]!r}"
-        )
+        raise ValueError(f"{n_close} closing tags in output, expected at most 1: {text[:200]!r}")
     if n_close == 0:
         # Truncation inside the thinking is a legitimate outcome (no answer yet), not an error.
         if stop_reason == "max_tokens":
             return text.strip(), None
-        raise ValueError(
-            f"no {THINK_CLOSE} although stop_reason={stop_reason!r}: {text[-200:]!r}"
-        )
+        raise ValueError(f"no {THINK_CLOSE} although stop_reason={stop_reason!r}: {text[-200:]!r}")
     thinking, answer = text.split(THINK_CLOSE)
     return thinking.strip(), answer.strip()
 
@@ -56,9 +52,7 @@ def finished_thinking():
         return Score(
             value=1.0 if finished else 0.0,
             answer=answer,
-            explanation="finished thinking and answered"
-            if finished
-            else "cut off or empty answer",
+            explanation="finished thinking and answered" if finished else "cut off or empty answer",
             metadata={
                 "stop_reason": output.stop_reason,
                 "input_tokens": output.usage.input_tokens,

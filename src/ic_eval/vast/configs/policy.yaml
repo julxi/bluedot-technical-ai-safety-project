@@ -1,0 +1,53 @@
+# How `ic-vast` chooses among offers and when it gives up on a booting host (fields documented in
+# PolicyConfig in src/ic_eval/vast/config.py). Shared by all machine configs. Design and the
+# answers behind these numbers: convos/julian/26-11-18_vast_host_selection_LOG.md.
+
+# $ value of an hour of Julian's waiting. From his choices in the LOG's A2 examples (26-11-18):
+# watching, he paid $4.2/h but not $9/h to save 8 min -> 6.0; away, he never paid -> 0.5.
+# `hedge` (the mode for watching) and `explore` (which must learn what matters when watching)
+# use the watching value; `exploit` and `balance` the away value. Reason: policy.mode_settings.
+lambda_away_per_hour: 0.5
+lambda_watching_per_hour: 6.0
+
+# Setup-time differences inside max(band_minutes, band_fraction x best expected setup time) cost
+# nothing; beyond that, each minute costs lambda (Julian: "any delta under 3 minutes should count
+# little ... above that the ~20% discounting should kick in").
+band_minutes: 3.0
+band_fraction: 0.2
+
+# A failed rental (never boots, ssh never works) wastes about this long before the next offer is
+# rented; plus switching to the next offer.
+failure_lost_minutes: 10.0
+switch_overhead_minutes: 1.0
+
+# Discounting: an observation's weight halves after this many days, so a bad day fades and a bad
+# host drifts back to the prior and gets tried again ("forgetful, no hard cuts").
+speed_half_life_days: 14.0
+failure_half_life_days: 30.0
+
+# `hedge`, the safe mode for when Julian is watching: remembers twice as long, counts failures
+# 3x, and minimises the 90th percentile of the cost instead of its mean.
+hedge_half_life_factor: 2.0
+hedge_failure_aversion: 3.0
+hedge_quantile: 0.9
+
+# `balance`, the default: Thompson sampling with the posterior spread shrunk to this fraction, so
+# it mostly exploits but now and then tries a host it knows little about. `explore` uses 1.0.
+balance_tempering: 0.5
+
+# Automatic re-renting after an abort or a host failure (Julian, 26-11-18: "yes, I like this").
+max_attempts: 3
+max_total_boot_minutes: 30.0
+
+# Hard caps per attempt; inside them, the speed-based abort in boot.py decides.
+max_boot_minutes: 15.0
+stall_minutes: 4.0
+abort_warmup_seconds: 90.0
+
+# A host that ran the same image this recently may still have it cached (pull skipped).
+cache_window_days: 7.0
+
+# Posterior sampling (model.py).
+n_posterior_draws: 1000
+gibbs_iterations: 3000
+gibbs_burn_in: 500
