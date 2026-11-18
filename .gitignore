@@ -17,3 +17,6 @@ __pycache__/
 
 # OS noise
 .DS_Store
+
+# for now ignore logs (needs final decision in future)
+/logs
