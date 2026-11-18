@@ -61,7 +61,7 @@ Full answer in the LOG, beneath Julian's comment "What options do I have to run 
 - **Compare judges** (Julian's idea). Proposed design: generate once and score the same responses with GPT-4o, a cheap current model, another vendor's model, and an open-weight Qwen3 32B. Validate against Julian's blind labels. Report kappa and confusion matrices, not raw agreement. The deciding question is whether all judges show the same direction of change between checkpoints.
 - **Own harness instead of the original `main.py` or `inspect_evals`** [concluded, not ratified]. The benchmark is small, and the experiment needs separate generation and judging steps, saved thinking/answer text with token counts, prompt variants, several judges, and loud failure on unparseable judge replies. Inspect with custom code is the alternative.
 - [verified: GitHub API 26-11-18] **Licence:** the InstrumentalEval repo has no licence. `inspect_evals` (MIT) downloads the CSVs at run time from a pinned commit with SHA-256 checks instead of copying them. Proposed to do the same.
-- Waiting on Julian: go-ahead for own code versus Inspect, the judge provider, and an API key in `.env`.
+- Waiting on Julian: go-ahead for own code versus Inspect, the judge provider, and an API key in `.env`. Julian has since started learning Inspect on a local Olmo (see the local-Olmo topic below). That points toward Inspect as the runner with our own task and scorer code, but nothing is decided.
 
 ## Recommendation [concluded: reasoning in the LOG, sections 6 and 7; not ratified]
 
@@ -82,3 +82,4 @@ Not checkable with a student budget: causal attribution to correctness rewards, 
 
 - LOG: `convos/julian/26-11-16_rlvr_instrumental_convergence_LOG.md` (entry title: *feasibility check, prior-work find, and project options for RLVR and instrumental convergence*)
 - See also: `convos/julian/26-11-18_paper_overviews_SUMMARY.md` — both papers this topic rests on now have overviews (`papers/*_OVERVIEW.md`) with line pointers. Their *Project notes* sections carry this topic's critiques in short form, plus one new finding: arXiv 2610.31624 used a different judge prompt than the original benchmark.
+- See also: `convos/julian/26-11-18_local_olmo_inspect_SUMMARY.md` — step-by-step guide for running Olmo 3 7B Think locally (llama.cpp) with Inspect; the tooling for this topic's runs.
