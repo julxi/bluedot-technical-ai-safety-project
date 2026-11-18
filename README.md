@@ -2,7 +2,7 @@
 
 Julian Bitterlich's project for the BlueDot Impact Technical AI Safety course. The specific research topic has not been chosen yet (as of 26-11-15); choosing it is the first real piece of work. A new reader should start with the Conversation Index below.
 
-This project uses the [Epistemic Memory](https://github.com/FlorianDietz/EpistemicMemory) conventions: all project memory lives in LOG/SUMMARY file pairs under `convos/`, governed by [CLAUDE.md](CLAUDE.md). Human guide: [docs/HOW_TO_USE.md](docs/HOW_TO_USE.md). Open ideas and deferred items: [FUTURE_WORK.md](FUTURE_WORK.md). Workflow problems and lessons: [FEEDBACK.md](FEEDBACK.md). Reference papers as Markdown: [papers/](papers/README.md).
+This project uses the [Epistemic Memory](https://github.com/FlorianDietz/EpistemicMemory) conventions: all project memory lives in LOG/SUMMARY file pairs under `convos/`, governed by [CLAUDE.md](CLAUDE.md). Human guide: [docs/HOW_TO_USE.md](docs/HOW_TO_USE.md). Open ideas and deferred items: [FUTURE_WORK.md](FUTURE_WORK.md). Workflow problems and lessons: [FEEDBACK.md](FEEDBACK.md). Reference papers as Markdown, each with a short living overview to read first: [papers/](papers/README.md).
 
 ## Team
 
@@ -33,4 +33,5 @@ All discussions live in `convos/{user}/`. **When starting a new topic, add a row
 |------|------|-------|--------|---------|-----|
 | 26-11-15 | julian | Project setup | Done; template configured | [SUMMARY](convos/julian/26-11-15_project_setup_SUMMARY.md) | [LOG](convos/julian/26-11-15_project_setup_LOG.md) |
 | 26-11-16 | julian | Public research log | Google Doc created and shared by link; adding entries needs the Google Docs connector | [SUMMARY](convos/julian/26-11-16_public_research_log_SUMMARY.md) | [LOG](convos/julian/26-11-16_public_research_log_LOG.md) |
-| 26-11-16 | julian | RLVR side-effects and instrumental convergence (candidate topic) | Feasibility check done; core experiment already published (arXiv 2610.31624), replication-with-better-protocol recommended; waiting on Julian's budget and choice of angle | [SUMMARY](convos/julian/26-11-16_rlvr_instrumental_convergence_SUMMARY.md) | [LOG](convos/julian/26-11-16_rlvr_instrumental_convergence_LOG.md) |
+| 26-11-16 | julian | RLVR side-effects and instrumental convergence (candidate topic) | Feasibility check done; core experiment already published (arXiv 2610.31624), replication-with-better-protocol recommended; run instructions for the Evading Shutdown category written (no run yet); waiting on Julian's budget and choice of angle | [SUMMARY](convos/julian/26-11-16_rlvr_instrumental_convergence_SUMMARY.md) | [LOG](convos/julian/26-11-16_rlvr_instrumental_convergence_LOG.md) |
+| 26-11-18 | julian | Paper overviews (living indexes with line pointers into `papers/`) | Convention set up, both overviews written, checker passes; waiting on Julian's ratification | [SUMMARY](convos/julian/26-11-18_paper_overviews_SUMMARY.md) | [LOG](convos/julian/26-11-18_paper_overviews_LOG.md) |

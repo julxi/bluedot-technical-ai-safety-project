@@ -3,6 +3,7 @@
 This file is the always-loaded core of the Epistemic Memory system: a set of file conventions that give agent-assisted projects a persistent, human-auditable memory. Reference material is read on demand:
 
 - **`docs/CODING.md`** — read in full before writing code or running an experiment.
+- **`docs/PAPERS.md`** — read before adding a paper to `papers/` or editing a paper overview.
 - **`docs/procedures/`** — one file per procedure; read the relevant file in full when you start that task:
   - `sync.md` — synchronize LOG/SUMMARY pairs (the user writes `!sync`, or you suspect drift)
   - `code_review.md` — code reviews, including the error-injection (seeded defects) check
@@ -195,6 +196,7 @@ Before responding to any substantive (non-trivial) request:
 3. Recent SUMMARY files of the current user, then a skim of other users' recent SUMMARYs.
 4. LOG files only if a SUMMARY is insufficient.
 5. `docs/CODING.md` before coding work; the relevant `docs/procedures/` file when you start that procedure.
+6. Papers in `papers/`: read the paper's `_OVERVIEW.md` first, then open the paper only at the `[§section lA-B]` lines it points to. If a task made you search a paper for something its overview lacked, add a one-line bullet with a pointer and run `python3 -I papers/check_overview_refs.py`. Rules: `docs/PAPERS.md`.
 
 ## Feedback
 
