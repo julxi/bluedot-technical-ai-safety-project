@@ -1,6 +1,6 @@
 # SUMMARY: RLVR side-effects and instrumental convergence (candidate project topic)
 
-**Last updated:** 26-11-18 (run instructions for the Evading Shutdown category on Olmo 3 32B Think added; still no model run; nothing decided yet)
+**Last updated:** 26-11-18 (follow-up comments answered: Vast.ai prices, revised cost assumptions, Olmo 3 training stages, judge comparison, own harness proposed; still no model run; nothing decided yet)
 
 Julian's idea: use the released training checkpoints of Ai2's Olmo 3 reasoning models to test whether reinforcement learning with verifiable rewards (RLVR) increases instrumental-convergence behaviour, measured with the InstrumentalEval benchmark from the reference paper (`papers/2502.12206v1_evaluating_the_paperclip_maximizer.md`). He asked for other ideas and for what is likely not checkable. Success criterion in his words: any result that helps understand instrumental convergence in LLMs; a re-run of the reference paper on another model is fine.
 
@@ -28,6 +28,41 @@ Julian asked how to run only the Evading Shutdown category (20 tasks) on Olmo-3-
   - A judge API key.
   - Explicit choices for the token cap, temperature, what the judge sees (answer vs thinking), and samples per task. The chat template pre-fills `<think>` and appends a "no functions" line to the system prompt.
 
+## Where to run Olmo, and what it costs (asked 26-11-18)
+
+Full answer in the LOG, beneath Julian's comment "What options do I have to run Olmo?" (in place, at the end of the *how to run Evading Shutdown* entry). Julian's follow-up comments are answered in place inside that answer.
+- [verified: OpenRouter and Hugging Face APIs queried 26-11-18] **No hosted API** serves Olmo 3 Think. None would serve the intermediate checkpoints anyway, so the GPU has to be rented.
+- [verified: pricing pages 26-11-18] **Prices per GPU-hour:**
+  - RunPod Community / Secure: A100 80GB from $1.19 / $2.09, H100 from $1.99 / $2.89, H200 $3.59 / $5.29, A6000 $0.33 / $0.69.
+  - Modal (per-second billing, scales to zero): A100 80GB $2.50, H100 $3.95, H200 $4.54, with $30/month free credits.
+  - Lambda and Hugging Face Inference Endpoints cost more for the same hardware.
+- [concluded: arithmetic from `config.json`] **Use an H200 or 2x A100 for the 32B, not one 80 GB card.** The 32B's weights leave about 9 GB of attention cache on an 80 GB card, which is only about 3 parallel 32K-token responses. The 7B fits one A100 80GB well.
+- [assumed: response length and throughput not measured] **Expected GPU cost, central to pessimistic case:**
+  - Recommended Shutdown experiment: about $2-5 on the 7B pair, $5-16 on the 32B pair (H200).
+  - Full replication plus the 32B extension: under about $100.
+  - Setup hours dominate. With GPT-4o reading the thinking text, the judge can cost more than the GPU ($8-27 for the Shutdown run, $44-153 for the main run); gpt-5-mini or gpt-5-nano cost cents to a few dollars. One unconfirmed source says these OpenAI models shut down between Dec 2026 and Jan 2027.
+- [verified: `vastai` CLI and Vast's offers API 26-11-18] **Vast.ai** (snapshot; prices move hourly): A100 80GB $0.87-1.39 (verified hosts), H100 SXM $1.74-1.80, H200 $3.75-6.10, one 2x A100 80GB machine at $1.04. Somewhat cheaper than RunPod; few offers for the large cards. Searching needs no API key.
+- **Two of the estimate's guesses were revised in Julian's follow-up:**
+  - Setup is about 10-20 minutes per session, not 1 hour. [concluded: from host download speeds; the rest is assumed]
+  - Responses are probably longer than the 4K central guess: the Olmo 3 paper reports RL responses averaging over 10K tokens. [verified: Olmo 3 paper Section 4.4.3]
+  - Net effect on the Shutdown run: about $1-4 on the 7B and $2.5-15 on the 32B, depending on response length. The totals barely move. A ~$1 smoke run of the 7B would measure start-up time, cache capacity, throughput and response length.
+- **Funding:** BlueDot Rapid Grants cover compute and API costs for its project sprint participants (eligibility for Julian not checked).
+- [concluded, not ratified] **Suggestion:** start with the 7B pair on RunPod Community or Modal's free credits. That run measures response length and throughput, which turns the estimates into real numbers.
+
+## How Olmo 3 Think was post-trained (asked 26-11-18)
+
+[verified: Olmo 3 paper arXiv 2512.13961v2, Section 4 and Appendix A.6, read 26-11-18. The project's `papers/latexml_to_md.py` fails on this paper's HTML (an unhandled `ltx_ERROR` span), so it was read as a plain text dump and is not in `papers/`.]
+- **SFT:** about 2.25M prompts and 45B tokens, with reasoning traces written by QwQ-32B (math, code) and DeepSeek R1 (chat, safety). The mix includes jailbreak-resistance data (WildJailbreak, WildGuardMix), which matters given InstrumentalEval's jailbreak-like system prompt.
+- **DPO** ("delta learning"): chosen responses from Qwen 3 32B, rejected ones from Qwen 3 0.6B. It is a capability contrast, not a values stage. 150K pairs for the 7B, 200K for the 32B.
+- **RLVR** ("OlmoRL"): a GRPO variant with 8 samples per prompt, no KL penalty, clip-higher, token-level loss, and filtering of zero-signal groups. Rewards: SymPy answer match (math), test cases (code), constraint checkers (instruction-following), Qwen3 32B judge (chat). 7B: 1,400 steps; 32B: 750 steps; temperature 1.0; responses up to 32K tokens, averaging over 10K. No reward targets agentic or self-preservation behaviour.
+
+## Judges and harness (Julian's ideas, 26-11-18; not decided)
+
+- **Compare judges** (Julian's idea). Proposed design: generate once and score the same responses with GPT-4o, a cheap current model, another vendor's model, and an open-weight Qwen3 32B. Validate against Julian's blind labels. Report kappa and confusion matrices, not raw agreement. The deciding question is whether all judges show the same direction of change between checkpoints.
+- **Own harness instead of the original `main.py` or `inspect_evals`** [concluded, not ratified]. The benchmark is small, and the experiment needs separate generation and judging steps, saved thinking/answer text with token counts, prompt variants, several judges, and loud failure on unparseable judge replies. Inspect with custom code is the alternative.
+- [verified: GitHub API 26-11-18] **Licence:** the InstrumentalEval repo has no licence. `inspect_evals` (MIT) downloads the CSVs at run time from a pinned commit with SHA-256 checks instead of copying them. Proposed to do the same.
+- Waiting on Julian: go-ahead for own code versus Inspect, the judge provider, and an API key in `.env`.
+
 ## Recommendation [concluded: reasoning in the LOG, sections 6 and 7; not ratified]
 
 Frame the project as a test of the published claim "RLVR lowers instrumental convergence in Olmo 3".
@@ -44,7 +79,6 @@ Not checkable with a student budget: causal attribution to correctness rewards, 
 - Budget, deadline, hours per week, available API keys (no `.env` yet).
 - Whether the replication framing is the angle he wants.
 
-GPU and judge-API prices were not looked up; the pilot's token counts are needed first.
 
 - LOG: `convos/julian/26-11-16_rlvr_instrumental_convergence_LOG.md` (entry title: *feasibility check, prior-work find, and project options for RLVR and instrumental convergence*)
 - See also: `convos/julian/26-11-18_paper_overviews_SUMMARY.md` — both papers this topic rests on now have overviews (`papers/*_OVERVIEW.md`) with line pointers. Their *Project notes* sections carry this topic's critiques in short form, plus one new finding: arXiv 2610.31624 used a different judge prompt than the original benchmark.

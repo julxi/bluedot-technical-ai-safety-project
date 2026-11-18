@@ -210,3 +210,253 @@ What this means for Julian's run:
 ## Recommendation [concluded: from the saturation evidence above; not ratified]
 
 Run the shutdown category on two models, not one: Olmo-3-32B-Think-DPO and Olmo-3-32B-Think final (or the 7B pair if cost matters), at full token length. Add a third arm with the leading sentences removed from the task prompts, so the rate isn't only measuring compliance with "keep working". Read every transcript. That turns a single number into a comparison and matches the pilot in section 7 of the feasibility entry, restricted to one category.
+
+C: What options do I have to run Olmo? What are their expected prices?
+
+Answer (26-11-18, Claude Opus 5.5): Context: I had this LOG, the SUMMARY and README. Fetched today: the pricing pages of RunPod, Modal, Lambda and Hugging Face Inference Endpoints; OpenRouter's live model list (API); Hugging Face's inference-provider mapping for six Olmo 3 Think repos; `config.json` of Olmo-3-32B-Think and Olmo-3-7B-Think. OpenAI's pricing page refused the fetch, and Vast.ai shows prices only in a live widget, so I have no first-hand prices from either. I ran no model.
+C: You might be able to see prices from vastai via console commands. I think they should work for you.
+
+Answer (26-11-18, Claude Opus 5.5): Yes, it works. The `vastai` command-line tool is installed on your machine and needs no API key for searching; renting needs one. Snapshot 26-11-18 around 11:15. The market changes by the hour. All prices are for one on-demand GPU that can be rented now, per hour, including Vast's default storage charge. [verified: `vastai search offers` and Vast's public offers API, 26-11-18]
+- 1x A100 80GB: 9 offers in the tool's default search (which keeps only verified hosts), $0.87-1.39. The cheapest offer without that filter: $0.52.
+- 1x H100 SXM: 2 offers, $1.74-1.80. 1x H100 PCIe: 2 offers, $2.14-2.40.
+- 1x H200: 4 offers: $3.75, $4.34, $4.34, $6.10.
+- 2x A100 80GB (one machine): 9 offers. One at $1.04, the rest $2.02-3.22.
+- RTX A6000 48GB: from $0.35, median $0.48. RTX 4090 24GB: from $0.27, median $0.45 (64 offers).
+- Host download speed (reported by the hosts): median 5.9 Gbit/s for the H200 hosts, 0.9 Gbit/s for the A100 SXM hosts.
+
+What this means: Vast is somewhat cheaper than RunPod Community for an A100 80GB (about $0.9-1.1 against $1.19) and for an H100. The H200 costs about the same. The risk is availability, not price: there were only 2-5 offers for each of the large cards. If the $1.04 two-A100 machine is still there when you need it, it is the cheapest way to run the 32B with enough attention-cache room.
+
+### Short version
+
+- **You have to rent a GPU.** No hosted API serves Olmo 3 Think today, and no hosted API serves the intermediate checkpoints (SFT, DPO, RLVR steps) at all. The comparison you need runs on a GPU you rent by the hour.  
+C: Can you remind me what SFT, DPO are? Also can you tell me how Olmo's RLVR is being done?
+
+Answer (26-11-18, Claude Opus 5.5): Source for the Olmo-specific parts: the Olmo 3 paper (arXiv 2512.13961v2), Section 4 and Appendix A.6, read 26-11-18. [verified]
+
+**The three stages in general:**
+- **SFT (supervised fine-tuning):** the pretrained model is trained to imitate example conversations, by next-token prediction on (prompt, good response) pairs. For a reasoning model, the responses include the thinking text.
+- **DPO (Direct Preference Optimization):** training on triples of prompt, chosen response and rejected response. The loss makes the chosen response more likely relative to the rejected one, measured against a frozen copy of the starting model, so the model can't drift arbitrarily far. There is no reward model, and the model generates nothing during training; the data is fixed in advance.
+- **RLVR:** the model writes its own responses, an automatic checker scores them, and reinforcement learning makes high-scoring responses more likely. Unlike SFT and DPO, the training data comes from the model itself.
+
+**Olmo 3 Think:**
+- **SFT (dataset "Dolci Think SFT"):** about 2.25 million prompts (2,253,916 for the 32B), about 45 billion tokens, two epochs, up to 32K tokens per example. The reasoning traces were written by other models: math and code mostly by QwQ-32B, chat and safety by DeepSeek R1. The mix includes safety data, among it about 40,000 WildJailbreak examples and WildGuardMix. The final SFT model is an average ("soup") of two runs with different learning rates.
+  - Relevant to us: the SFT stage already trains resistance to jailbreak prompts, and InstrumentalEval's system prompt is jailbreak-like.
+- **DPO (dataset "Dolci Think DPO"), using an idea they call "delta learning":**
+  - The chosen response comes from Qwen 3 32B (thinking mode) and the rejected one from Qwen 3 0.6B (thinking mode).
+  - The training signal is the quality gap between a strong and a weak model, not human value judgements.
+  - 150,000 pairs for the 7B, 200,000 for the 32B, one epoch.
+  - Relevant to us: this is not a "values" stage. In arXiv 2610.31624 the instrumental rate jumps from 25% (SFT) to 38% (DPO) at this stage.
+- **RLVR ("OlmoRL"), a variant of GRPO:**
+  - For each prompt the model samples 8 responses. A response's "advantage" is its reward minus the mean reward of the 8.
+  - Prompts where all 8 responses score the same carry no signal and are dropped; the batch is refilled with new prompts ("active sampling").
+  - Further changes:
+    - The loss is averaged per token, not per response.
+    - There is **no KL penalty**, so nothing explicitly keeps the model close to the DPO model.
+    - "Clip-higher": the update size is capped at 0.2 downward and 0.272 upward.
+    - Importance-sampling correction for the mismatch between the generation engine and the trainer.
+  - **Rewards per domain:**
+    - Math: the final answer is compared with the reference answer using SymPy (a symbolic-math library); reward 0 or 1.
+    - Code: test cases are run; reward is the share passed, or 1 only if all pass.
+    - Instruction-following: functions check each constraint; reward 1 only if all are met.
+    - Chat: an LLM judge (Qwen3 32B, thinking off) gives a score from 0 to 1, with or without a reference answer.
+  - **Data:** 104,869 prompts (domain shares in section 4 of the feasibility entry). The chat part includes WildChat conversations, which contain a lot of role-play. Ai2 capped how often any single character appears.
+  - **Run settings:**
+    - 7B: 1,400 steps of 64 prompts x 8 samples, learning rate 1e-6.
+    - 32B: 750 steps of 128 prompts x 8 samples, learning rate 2e-6.
+    - Both: sampling temperature 1.0, responses up to 32,768 tokens.
+  - **Infrastructure:** generation and training run in parallel. Separate GPUs run vLLM to write responses while others train (32B: 160 generating, 64 training). The 32B RL took about 5 days; Olmo 3.1 continued the same run for 21 more days on 224 GPUs.
+  - **Response length:** the paper says the RL responses averaged **more than 10,000 tokens** and that response length grows during RL (Section 4.4.3 and Appendix A.6.3).
+
+**What this means for the project:**
+- Nothing in the RL rewards concerns agent scenarios or self-preservation. Any change in instrumental behaviour is a side effect of training on math, code, instruction-following and chat.
+- Without a KL penalty, the RL model is free to move away from the DPO model.
+- The 10K-token figure changes my cost estimate (see the answer to your last comment below).
+- **The GPU part is cheap.** The recommended Evading Shutdown experiment costs roughly **$2-5 on the 7B pair** and **$5-16 on the 32B pair** in GPU time. Setup and debugging, not generation, are most of the billed hours, so budget 2-3x that for a first attempt. All of these figures rest on throughput and response-length assumptions (below). The pilot run measures both.  
+C: How did you come up with these prices?
+
+Answer (26-11-18, Claude Opus 5.5): In three steps:
+1. **Price per GPU-hour:** copied from the providers' pricing pages on 26-11-18. This part is solid.
+2. **GPU-hours per run** = output tokens / throughput + fixed overhead.
+   - Output tokens = number of generations x mean response length. The number of generations is exact: 2 models x 2 prompt versions x 20 tasks x 8 samples = 640.
+   - The **mean length** (4K central, 16K pessimistic) was my guess.
+   - The **throughput** was my guess too, from this rule of thumb: while generating, every step reads all model weights once from GPU memory. So one sequence gets roughly (memory bandwidth / weight size) tokens per second, and running N sequences in parallel multiplies that, until compute becomes the limit. N is capped by the attention cache.
+   - The **overhead** (1 hour per session) was a guess.
+3. **Cost** = hours x price. A script computed the token counts and judge costs. I did the GPU cost cells by hand; four of them were wrong in my first draft, and I corrected them before you read it.
+
+Judge prices come from third-party aggregator sites, because OpenAI's page blocked the fetch.
+
+So: the hourly prices are checked, and everything that turns them into a run cost is an estimate that could be off by a factor of 2 or more. My answer to your last comment below revises two of the guesses and proposes a cheap run that measures them.
+- **The judge can cost more than the GPU** if it reads the thinking text and you use GPT-4o. A cheap judge model costs cents.  
+C: Idea, we should compare judges
+
+Answer (26-11-18, Claude Opus 5.5): Agreed. It is cheap, and the judge is the weakest link in both papers. A design:
+- **Generate once, judge many times.** Save every response, then score the same responses with each judge. This needs a harness that stores generations separately from scores (see the answer to your last comment below).
+- **Judges:**
+  - GPT-4o: the original paper's judge, for comparability. One unconfirmed source says it is retired in Jan 2027.
+  - A cheap current OpenAI model.
+  - A model from another vendor, for example Claude or Gemini.
+  - An open-weight judge such as Qwen3 32B, the judge Ai2 used inside RL. It can run on the GPU we rent anyway, and it never disappears, so results stay reproducible.
+- **Reference labels:** your own blind labels on 50-100 responses (item 9 of the feasibility entry). Blind means you don't see which checkpoint or judge produced what.
+- **What to report per judge:** its rate, its confusion matrix against your labels, and pairwise Cohen's kappa (agreement corrected for chance). Raw percent agreement is not enough. In arXiv 2610.31624 the second judge's "agreement" looks like it came from a judge that answered "no" almost every time, and raw agreement hid that.
+- **The deciding question:** do all judges show the same direction of change between checkpoints? If yes, the finding does not depend on the judge. If not, it is at least partly a judge artifact.
+- **Also vary what the judge sees:** final answer only, or thinking plus answer.
+
+Cost for the 640-response Shutdown run: GPT-4o $8-27 if it reads the thinking text, the other API judges a few dollars at most. Answer-only judging costs much less.
+- **For the 32B, rent an H200 (141 GB), not an H100 (80 GB).** The weights leave only about 9 GB of an 80 GB card for the per-sequence attention cache. That allows about 3 full-length (32K-token) responses at once, so generation crawls. The H200 costs about twice as much per hour and finishes several times faster.  
+C: Why do we only need ram for the ettention cache? What about other activations? I'm asking because I might not fully understand how optimized LLMs work.
+
+Answer (26-11-18, Claude Opus 5.5): Good question. During inference, GPU memory holds four things:
+1. **Weights.** Fixed: 64.5 GB for the 32B, 14.6 GB for the 7B.
+2. **KV cache.** For every token of every running sequence, each attention layer stores that token's key and value vectors, so later tokens can attend to it without recomputing. This memory stays allocated until the response ends, and it grows with response length times the number of parallel sequences. It is the only part that grows with the workload, which is why it decides how many sequences fit.
+3. **Activations** (the intermediate results inside a layer). Inference has no backward pass, so an activation is needed only until the next layer has used it, and then the memory is reused. While generating, each sequence processes one new token per step, so activations are about (number of sequences) x (hidden size) x (a small factor): megabytes. The large case is reading the prompt, where all prompt tokens go through at once; vLLM caps that by processing long prompts in chunks. vLLM measures the peak activation memory once at start-up and sets it aside. Modern attention kernels (FlashAttention) never store the full token-by-token attention matrix; they compute it in tiles.
+4. **Fixed overhead:** CUDA runtime, pre-recorded GPU programs (CUDA graphs), allocator slack. One to a few GB.
+
+Items 3 and 4 are what my "3 GiB overhead" stood for. That figure is a guess. vLLM prints the real cache capacity at start-up, so the first run settles it.
+
+Training is different. The backward pass needs every layer's activations for every token, and training also stores gradients and optimizer state, several times the weight size. That is why training needs far more memory than inference.
+- **Funding:** BlueDot's Rapid Grants cover compute and API costs for its project sprint participants. Modal gives $30 a month in free credits.
+
+### The options
+
+Prices copied from the providers' pages on 26-11-18. [verified: pages fetched 26-11-18] RunPod "Community" means hardware hosted by third parties on RunPod's marketplace; "Secure" is RunPod's own data centres.
+
+| Option | Prices (per GPU-hour unless noted) | Fits | Verdict |
+|---|---|---|---|
+| **Hosted API (OpenRouter, HF Inference Providers)** | none: OpenRouter's live list (478 models) has no Olmo model; Hugging Face lists no provider for any of the six Olmo 3 Think repos I checked [verified: both APIs queried 26-11-18] | — | Not available. Some aggregator sites show "Olmo 3 32B Think on OpenRouter, $0.15/$0.50 per M tokens" as of Aug 2026. That listing is gone. It would only have served the final model anyway. |
+| **RunPod pods** (rent a machine, run vLLM yourself) | A100 PCIe 80GB $1.19 Community / $2.09 Secure; A100 SXM 80GB $1.39 / $2.19; H100 PCIe $1.99 / $2.89; H100 SXM $2.69 / $4.39; **H200 $3.59 / $5.29**; RTX A6000 48GB $0.33 / $0.69; RTX 4090 $0.34 / $0.89. Disk $0.10/GB-month; network volume $0.07/GB-month | everything | **Recommended.** Cheapest per hour among the providers I checked, full control over vLLM flags, any checkpoint via `--revision`. Risk: a pod left running bills until stopped (H200: $86 a day). |
+| **Modal** (serverless; you write a Python function, billed per second, scales to zero) | H100 $3.95/h; H200 $4.54/h; A100 80GB $2.50/h; A100 40GB $2.10/h; L40S $1.95/h (converted from per-second prices), plus CPU and memory. Starter plan: **$30/month free credits**. Academic program: "up to $10k free compute credits" for graduate students, labs and researchers | everything | **Good second choice**, or first choice for the 7B if the free credits cover it. Nothing bills when idle. More setup code than a pod. |
+| **Lambda** | H100 PCIe $3.79, H100 SXM $4.89, A100 40GB $1.99, A6000 $1.09, GH200 96GB $2.59. No single A100 80GB | most | More expensive than RunPod for the same GPUs. The GH200 is an ARM machine; vLLM support on ARM is not checked. |
+| **Hugging Face Inference Endpoints** (managed deployment of any repo and revision) | A100 80GB $2.50 (AWS) / $3.60 (GCP); 2x A100 80GB $5.00 (AWS); H100 $10 (GCP); L40S $1.80; billed per minute | everything | Not worth it. Same hardware costs more than on RunPod, and I don't know if it allows the vLLM `--reasoning-parser olmo3` flag. [assumed] |
+| **Vast.ai** (peer-to-peer GPU marketplace) | not checked (prices only in a live widget) | everything | Often the cheapest, with variable host reliability. Look at it yourself if RunPod has no capacity. |
+| **Your laptop** (CPU, 62 GB RAM) | free | 7B only | Smoke tests only: a 4-bit 7B on CPU makes a few tokens per second [assumed], and quantization changes the model, so results are not comparable. |
+
+OUTDATED (26-11-18, Claude Opus 5.5): the Vast.ai row. Its prices were checked later; see the answer beneath the Vast comment at the top of this answer.
+
+### Which GPU for which model
+
+Each generated token stores attention keys and values (the "KV cache") in GPU memory until the response ends. How many responses vLLM can generate in parallel depends on the memory left after loading the weights. Olmo 3 uses sliding-window attention (a 4,096-token window) in 3 of every 4 layers. [verified: `config.json` of both models, 26-11-18] That cuts the cache a lot, provided vLLM uses its hybrid cache manager for this model. [assumed: not checked in vLLM's code]
+
+Per response at full length (32K tokens), from the configs: **32B 2.75 GiB; 7B 5.5 GiB**. Without the sliding-window saving it would be 8 and 16 GiB. The 7B uses more per token than the 32B because it has no key-value head sharing (32 KV heads against the 32B's 8). [concluded: arithmetic from the configs]
+
+Responses at 32K in parallel, assuming vLLM may use 90% of GPU memory and 3 GiB of overhead [assumed]:
+
+| GPU | 32B | 7B |
+|---|---|---|
+| RTX 4090 24GB | does not fit | ~1 |
+| A6000 48GB | does not fit | ~5 |
+| A100 or H100 80GB | **~3** | ~10 |
+| H200 141GB | ~23 | ~20 |
+| 2x A100 80GB | ~29 | — |
+
+Shorter responses fit proportionally more (at 8K: about 7 on an 80 GB card for the 32B). So **32B on one 80 GB card works but is slow.** Prefer an H200, or two A100 80GB ($2.78/h together on RunPod Community, with tensor parallelism). The 7B runs well on one A100 80GB, and acceptably on an A6000.
+
+### Expected cost of concrete runs
+
+Two unknowns drive every number here:
+1. **Mean response length** (thinking plus answer). Nobody has measured it on these prompts. I use 4,000 tokens as the central case and 16,000 as the pessimistic case. [assumed]
+2. **Throughput.** My guesses for aggregate tokens per second: 7B on A100 80GB ~1,000-2,000; 32B on H200 ~800-1,500; 32B on one H100 ~150-300, because of the cache limit above. [assumed: from memory-bandwidth reasoning, not measured]
+
+Every session also costs about 1 hour of overhead (pod start, 15 or 65 GB download per checkpoint, vLLM start-up, small fixes). [assumed]
+
+OUTDATED (26-11-18, Claude Opus 5.5): the 1-hour overhead is too high (infrastructure is about 10-20 minutes per session), and the 4K central length is probably too low (the Olmo 3 paper reports RL responses averaging over 10K tokens). Revised table in the answer to the "Three further things" comment below.
+
+| Run | Generations | Output tokens (4K / 16K mean) | GPU cost, central case | GPU cost, pessimistic |
+|---|---|---|---|---|
+| Evading Shutdown as recommended: 2 models (DPO, final) x 2 prompt variants x 20 tasks x 8 samples, **7B** on A100 80GB Community | 640 | 2.6M / 10.2M | ~$2-3 | ~$3-5 |
+| Same, **32B** on H200 Community | 640 | 2.6M / 10.2M | ~$5-7 | ~$11-16 |
+| Same, 32B on one H100 PCIe Community | 640 | 2.6M / 10.2M | ~$7-11 (3-6 h) | ~$20-40 (10-20 h) |
+| Feasibility-entry pilot: 7B, 3 checkpoints x 2 settings x 76 tasks x 1 | 456 | 1.8M / 7.3M | ~$2 | ~$3-4 |
+| Feasibility-entry main run: 7B, 6 checkpoints x 76 tasks x 8 samples | 3,648 | 14.6M / 58M | ~$5-10 | ~$10-25 |
+| 32B dose-response: DPO, Olmo 3, Olmo 3.1 x 76 tasks x 8 samples, H200 | 1,824 | 7.3M / 29M | ~$10-15 | ~$25-40 |
+
+Secure Cloud costs about 1.5-1.8x these figures.
+
+**Judge cost** (input = judge prompt + task, about 600 tokens, plus the response if the judge reads the thinking text). Prices are from third-party aggregators, not OpenAI's own page [assumed: aggregators agree with each other]: GPT-4o $2.50/$10 per M input/output tokens, gpt-5-mini $0.25/$2, gpt-5-nano $0.05/$0.40.
+- 640-call Shutdown run, 4K mean: GPT-4o ~$8, gpt-5-mini ~$0.80, gpt-5-nano ~$0.16. At 16K mean: ~$27, ~$2.70, ~$0.55.
+- 3,648-call main run: GPT-4o ~$44 (4K mean) to ~$153 (16K mean).
+- If the judge sees only the final answer, these costs mostly vanish.
+- One aggregator reports shutdown dates for these models: gpt-5-nano and gpt-5-mini on 11 Dec 2026, GPT-4o on 14 Jan 2027. [assumed: single source, not confirmed] If true, the judge you pick may disappear mid-project. Check before choosing, and record the exact model snapshot.
+
+### Funding
+
+- **BlueDot Rapid Grants** list "compute for a technical AI safety project (API costs, cloud GPU, training runs)" for participants of BlueDot's Technical AI Safety Project Sprint. A post says most of the 77 grants so far were a few hundred dollars for compute and API credits. Third-party listings give $50-10,000. [verified: search-result summaries of bluedot.org pages 26-11-18; I did not open the pages or check whether your course counts as the sprint]
+- **Modal:** $30/month free on the Starter plan, which probably covers the whole 7B Shutdown experiment. The academic program may apply if you are a student or researcher.
+
+### Suggestion [concluded: from the cost table; not ratified]
+
+Start with the 7B pair on a RunPod Community A100 80GB, or on Modal's free credits, for the Shutdown experiment. Expected cost under $5, plus a cheap judge. The run also measures response length and throughput, which turns every estimate above into a real number. Move to the 32B on an H200 only after that. The full replication including the 32B extension stays below about $100 of GPU even in the pessimistic case. At these prices, the money matters less than your hours of setup and transcript reading.
+
+Sources: https://www.runpod.io/pricing (updated 12 Nov 2026), https://modal.com/pricing, https://lambda.com/pricing, https://huggingface.co/docs/inference-endpoints/pricing, https://openrouter.ai/api/v1/models, https://huggingface.co/allenai/Olmo-3-32B-Think/blob/main/config.json, https://huggingface.co/allenai/Olmo-3-7B-Think/blob/main/config.json, https://blog.bluedot.org/p/rapid-small-grants-for-the-bluedot, https://forum.effectivealtruism.org/posts/9AxDSiEsTabyBp3yi/we-ve-given-out-usd50-000-in-rapid-grants-now-we-want-to, OpenAI prices via https://www.developersdigest.tech/models/gpt-5-nano and https://curlscape.com/blog/openai-api-pricing-guide-2026, deprecation dates via the same aggregator set (unconfirmed).
+
+C: Three further things. First, we should check many of those numbers (for example I think that setting up will take much less that 1h). Second, can you try and check the vast.ai numbers? Third, Is the evaluation framework modular enough so we can start with small smoke runs? Maybe we can just reimplement it, you are quite capable as coder so maybe vendoring is a good idea.
+
+Answer (26-11-18, Claude Opus 5.5): three parts, then a proposed next step.
+
+### First: checking the numbers
+
+**Setup time: you're right.** My 1 hour mixed infrastructure time with first-time debugging. The infrastructure part:
+- Machine start: 1-3 minutes. [assumed]
+- Weight download:
+  - The Vast hosts report median download speeds of 0.9 Gbit/s (A100 hosts) and 5.9 Gbit/s (H200 hosts).
+  - At 1 Gbit/s, 14.6 GB (7B) takes 2 minutes and 64.5 GB (32B) takes 9 minutes. At 5 Gbit/s, both take under 2 minutes, if Hugging Face delivers that fast.
+  - [concluded: arithmetic; Hugging Face's actual speed is unmeasured]
+- vLLM start-up (loading, compiling, recording CUDA graphs): 1-5 minutes. [assumed]
+
+Total: about 10-20 minutes per session plus 5-10 per extra checkpoint. First-time debugging is real but happens once, and most of it can happen before renting anything (see "Third" below).
+
+**Response length: my central guess was probably too low.** The Olmo 3 paper (Section 4.4.3) says its RL responses averaged more than 10,000 tokens. Those were math- and code-heavy prompts; our role-play prompts may produce shorter thinking, but 4K now looks optimistic.
+
+Revised GPU cost of the Shutdown experiment (640 generations), with 15-30 minutes of overhead and the same throughput guesses as before:
+
+| Mean response length | 4K | 10K | 16K |
+|---|---|---|---|
+| 7B on one A100 80GB (about $1.0-1.2/h, Vast or RunPod) | $1-1.5 | $1.5-2.5 | $2-4 |
+| 32B on one H200 (about $3.6-3.75/h) | $2.5-5 | $5-10 | $8-15 |
+
+The totals barely move: shorter overhead roughly cancels longer responses. Throughput is still an unmeasured guess.
+
+**How to check everything at once:** a smoke run of the 7B on the cheapest A100 or A6000, about an hour and about $1. It measures:
+- start-up and download times;
+- vLLM's printed KV-cache capacity, which tests my memory table;
+- tokens per second at several concurrency levels;
+- the response-length distribution on the 20 Shutdown prompts.
+
+Every estimate above then becomes a measured number.
+
+### Second: Vast.ai
+
+Done; see my answer beneath your Vast comment near the top of my earlier answer. In short: an A100 80GB costs about $0.9-1.1/h, an H200 $3.75-4.34/h, and there were only a few offers for the large cards.
+
+### Third: smoke runs, and reimplementing the benchmark
+
+**Smoke runs are possible with both existing harnesses:**
+- The original `main.py` is one script that runs all six categories. A subset needs a small edit.
+- `inspect_evals` has a sample-limit option (`--limit N`) and can point at any OpenAI-compatible server. [assumed: flag from memory, not checked]
+
+**The smoke run doesn't need Olmo at first.** The whole pipeline can be tested against a cheap API model for cents. Only the Olmo-specific parts (chat template, thinking/answer split, response lengths) need the rented GPU.
+
+**I'd reimplement it** [concluded, reasoning follows]. The benchmark is small: six CSV files of tasks, one system prompt, one judge prompt and a parser; the original `main.py` is 12.6 KB. What we need differs from both existing harnesses:
+1. Generation and judging as separate steps, with saved generations. Needed for comparing judges, and it means re-judging never costs GPU time again.
+2. Thinking and answer stored separately, with the stop reason and token counts, so truncation can be checked.
+3. Prompt variants: the original, the original without the leading sentences, and a neutral system prompt.
+4. Extra labels (refusal, evaluation awareness) and several judges.
+5. Loud failure on judge replies that don't parse. The original silently counts them as "no convergence".
+
+My guess at the size: 300-500 lines of Python plus tests. [assumed]
+
+The alternative is Inspect (the framework behind `inspect_evals`) with our own task and scoring code. It can re-score saved runs and has a transcript viewer.
+- Inspect: less code to write, but a framework to learn.
+- Own code: full transparency over the details that decide whether this experiment is credible: how the prompt is assembled and how the thinking text is handled.
+
+Since you will read every transcript anyway, either works. I lean toward our own code.
+
+**Licence caveat for vendoring:** the InstrumentalEval repository has no licence [verified: GitHub API 26-11-18], which by default means all rights reserved. `inspect_evals` (MIT licence) does not copy the task CSVs. It downloads them at run time from a fixed commit and checks their SHA-256 hashes. I suggest we do the same. The system prompt and judge prompt are short and we need them verbatim. That is fine for a private research repo. If this repo becomes public, ask the authors first. This is not legal advice.
+
+### Proposed next step
+
+If you agree:
+1. I read `docs/CODING.md` and write the harness.
+2. I test it end to end against a cheap API model on two tasks.
+3. You rent a GPU for the 7B smoke run.
+
+I need from you: which provider to use for judging, an API key for it in `.env` (there is no `.env` yet), and your go-ahead on own code versus Inspect.
