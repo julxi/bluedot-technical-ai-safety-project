@@ -1,13 +1,19 @@
 """Watch a rented instance boot, measure its image pull, and give up on it early when it is slow.
 
-Every poll of vast.ai's status is kept (records.Poll). The pull messages in it ("<layer>: Pull
-complete") give the bytes unpacked so far (image.py); from them the live pull speed, combined with
-the host's posterior, predicts the remaining time, and the boot is aborted when switching to the
-next-best offer is predicted to be faster by more than the tolerance band (policy.AbortRule).
-Hard caps (total boot time, a status that stops changing) stay on top of that.
+Every poll of vast.ai's status is kept (records.Poll). Pull progress comes from the pull messages
+(pull.PullTracker). After a warm-up, the boot is aborted when even the pull's best case so far
+(its upper-bound speed) needs more time than switching to the next-best offer, or clearly more
+than the pull budget left (policy.abort_reason). Hard caps stay on top of that:
+
+- the pull phase (renting until the pull ends, i.e. download and unpack): max_pull_minutes;
+- the build phase (pull end until `running`: vast.ai's build step): max_build_minutes, from the
+  moment the pull ended. Separate caps because the build has no network uncertainty left and
+  took 0.7 to 5.4 min in the 26-11-18 tests (BuildKit vs Docker's legacy builder): one cap over
+  both would destroy a host that had finished a slowish pull and only had its build left;
+- both within what remains of max_total_boot_minutes across attempts;
+- a status that stops changing (stall_minutes).
 """
 
-import re
 import time
 from typing import Literal, NamedTuple
 
@@ -15,7 +21,8 @@ from ic_eval.vast.common import log
 from ic_eval.vast.config import PolicyConfig
 from ic_eval.vast.image import Layer
 from ic_eval.vast.market import show_instance
-from ic_eval.vast.policy import AbortRule, predict_remaining
+from ic_eval.vast.policy import AbortRule, abort_reason, best_case_pull_left
+from ic_eval.vast.pull import PullTracker
 from ic_eval.vast.records import FailureType, Poll, PullStats
 
 POLL_INTERVAL_S = 5
@@ -25,15 +32,6 @@ DEAD_STATUSES = frozenset({"missing", "exited"})
 # A boot status containing this means the host cannot resolve vast.ai's own servers; such a host
 # never finishes booting (SPD repo, host 124072 on 26-10-06).
 DNS_FAILURE_MARKER = "resolve host"
-LAYER_LINE = re.compile(r"^([0-9a-f]{12}): (.+)$")
-# Layer events that mean bytes crossed the network (not "Already exists": the host had it).
-DOWNLOAD_EVENTS = (
-    "Downloading",
-    "Verifying Checksum",
-    "Download complete",
-    "Pull complete",
-)
-DONE_EVENTS = ("Pull complete", "Already exists")
 
 
 class BootResult(NamedTuple):
@@ -42,79 +40,7 @@ class BootResult(NamedTuple):
     detail: str | None
     polls: list[Poll]
     pull: PullStats
-    abort_prediction_min: float | None
-
-
-class PullTracker:
-    """Pull progress from the stream of status messages.
-
-    Docker unpacks layers in manifest order, so the highest-index layer reported done implies all
-    before it are done; bytes_done is their cumulative size. The pull starts with the first pull
-    message and ends at the first BuildKit line ("#0 building ...", vast.ai's step after the pull)
-    or when the instance runs.
-    """
-
-    def __init__(self, layers: list[Layer]):
-        self.layers = layers
-        # first copy of a repeated (tiny) layer; see image.fetch_layers
-        self.index: dict[str, int] = {}
-        for i, layer in enumerate(layers):
-            self.index.setdefault(layer.short_id, i)
-        self.cumulative = [sum(layer.size for layer in layers[: i + 1]) for i in range(len(layers))]
-        self.bytes_total = self.cumulative[-1]
-        self.done_index = -1
-        self.started_at: float | None = None
-        self.ended_at: float | None = None
-        self.downloaded = False
-        self.unknown_ids: list[str] = []
-
-    @property
-    def bytes_done(self) -> int:
-        if self.ended_at is not None:
-            return self.bytes_total
-        return self.cumulative[self.done_index] if self.done_index >= 0 else 0
-
-    def update(self, t: float, status: str | None, message: str | None) -> None:
-        lines = [line.strip() for line in (message or "").splitlines() if line.strip()]
-        for line in lines:
-            match = LAYER_LINE.match(line)
-            if (match is not None or "Pulling from" in line) and self.started_at is None:
-                self.started_at = t
-            if match is None:
-                continue
-            short_id, event = match.groups()
-            if short_id not in self.index:
-                if short_id not in self.unknown_ids:
-                    self.unknown_ids.append(short_id)
-                continue
-            if event.startswith(DOWNLOAD_EVENTS):
-                self.downloaded = True
-            if event.startswith(DONE_EVENTS):
-                self.done_index = max(self.done_index, self.index[short_id])
-        building = any(line.startswith("#") for line in lines)
-        if (
-            self.started_at is not None
-            and self.ended_at is None
-            and (building or status == "running")
-        ):
-            self.ended_at = t
-
-    def stats(self, now: float) -> PullStats:
-        cached = not self.downloaded
-        speed = None
-        if not cached and self.started_at is not None:
-            end = self.ended_at if self.ended_at is not None else now
-            if end > self.started_at and self.bytes_done > 0:
-                speed = self.bytes_done / 1e6 / (end - self.started_at)
-        return PullStats(
-            started_at=self.started_at,
-            ended_at=self.ended_at,
-            bytes_total=self.bytes_total,
-            bytes_done=self.bytes_done,
-            cached=cached,
-            speed_mb_s=speed,
-            unknown_layer_ids=list(self.unknown_ids),
-        )
+    abort_prediction_min: float | None  # best-case minutes to ready (overhead incl.) at abort
 
 
 def wait_for_boot(
@@ -122,14 +48,17 @@ def wait_for_boot(
     layers: list[Layer],
     rule: AbortRule,
     policy: PolicyConfig,
-    budget_s: float,
+    total_left_s: float,
 ) -> BootResult:
     """Poll until the instance runs, fails, or is given up on. Never destroys it (the caller does).
 
-    `budget_s` is the boot time left for this attempt: min(max_boot_minutes, what remains of
-    max_total_boot_minutes across attempts).
+    `total_left_s` is what remains of max_total_boot_minutes across attempts; both phase caps end
+    no later than that. A boot whose pull messages are never seen (no pull started in the
+    tracker) stays in the pull phase until `running`, so only the pull cap applies to it.
     """
     start = time.time()
+    end_of_total = start + total_left_s
+    pull_deadline = min(start + policy.max_pull_minutes * 60, end_of_total)
     tracker = PullTracker(layers)
     polls: list[Poll] = []
     last_change = start
@@ -163,48 +92,84 @@ def wait_for_boot(
             return result("failed", "dead", f"instance went '{status}' while booting ({message})")
         if message and DNS_FAILURE_MARKER in message:
             return result("failed", "dns", f"cannot resolve vast.ai's servers: {message}")
-        if now - start > budget_s:
-            return result("failed", "boot_timeout", f"not running after {budget_s / 60:.1f} min")
+        if tracker.ended_at is None and now > pull_deadline:
+            return result(
+                "failed",
+                "boot_timeout",
+                f"pull not finished {(pull_deadline - start) / 60:.1f} min after renting",
+            )
+        if tracker.ended_at is not None:
+            build_deadline = min(tracker.ended_at + policy.max_build_minutes * 60, end_of_total)
+            if now > build_deadline:
+                return result(
+                    "failed",
+                    "boot_timeout",
+                    f"build step not done {(build_deadline - tracker.ended_at) / 60:.1f} min "
+                    f"after the pull ended",
+                )
         if now - last_change > policy.stall_minutes * 60:
             return result(
                 "failed",
                 "stall",
                 f"status unchanged for {policy.stall_minutes} min: {message}",
             )
-        progress = _progress_line(tracker, rule, now)
-        line = f"{status} | {progress}" if progress else f"{status} ({_last_line(message)})"
+        pull_budget_left_min = (pull_deadline - now) / 60
+        pull_left = _best_case_pull_left(tracker, now)
+        progress = _progress_line(tracker, rule, now, pull_left, pull_budget_left_min)
+        if progress is not None:
+            line = f"{status} | {progress}"
+        elif tracker.ended_at is not None:
+            line = (
+                f"{status} | build step, {(now - tracker.ended_at) / 60:.0f} min since the pull "
+                f"ended ({_last_line(message)})"
+            )
+        else:
+            line = f"{status} ({_last_line(message)})"
         if line != last_logged:
             log(f"Boot: {line}")
             last_logged = line
-        if tracker.started_at is not None and tracker.ended_at is None:
-            pulled_s = now - tracker.started_at
-            prediction = predict_remaining(rule, tracker.bytes_done, tracker.bytes_total, pulled_s)
-            if (
-                pulled_s >= policy.abort_warmup_seconds
-                and prediction is not None
-                and rule.threshold_min is not None
-                and prediction > rule.threshold_min
-            ):
-                return result(
-                    "aborted_slow",
-                    None,
-                    f"predicted {prediction:.1f} more min > {rule.threshold_min:.1f} min for the "
-                    f"next-best offer (switch included)",
-                    prediction,
-                )
+        bounds = tracker.speed_bounds(now)
+        if (
+            pull_left is not None
+            and bounds is not None
+            and bounds.elapsed_s >= policy.abort_warmup_seconds
+        ):
+            reason = abort_reason(rule, pull_left, pull_budget_left_min)
+            if reason is not None:
+                return result("aborted_slow", None, reason, pull_left + rule.overhead_min)
         time.sleep(POLL_INTERVAL_S)
 
 
-def _progress_line(tracker: PullTracker, rule: AbortRule, now: float) -> str | None:
-    if tracker.started_at is None or tracker.ended_at is not None or tracker.bytes_done == 0:
+def _best_case_pull_left(tracker: PullTracker, now: float) -> float | None:
+    """Best-case minutes of pull left while it runs; None before it starts or after it ends.
+
+    speed_bounds is None in the poll that shows the first pull message (0 s elapsed: 26-11-18 live
+    test, host 842447, crashed the old prediction).
+    """
+    if tracker.ended_at is not None or tracker.speed_bounds(now) is None:
         return None
-    pulled_s = now - tracker.started_at
-    speed = tracker.bytes_done / 1e6 / pulled_s
-    prediction = predict_remaining(rule, tracker.bytes_done, tracker.bytes_total, pulled_s)
-    limit = f", abort above {rule.threshold_min:.1f}" if rule.threshold_min is not None else ""
+    assert tracker.started_at is not None
+    return best_case_pull_left(tracker.bytes_upper, tracker.bytes_total, now - tracker.started_at)
+
+
+def _progress_line(
+    tracker: PullTracker,
+    rule: AbortRule,
+    now: float,
+    pull_left: float | None,
+    pull_budget_left_min: float,
+) -> str | None:
+    bounds = tracker.speed_bounds(now)
+    if pull_left is None or bounds is None:
+        return None
+    limits = f"pull > {rule.budget_margin:g} x {pull_budget_left_min:.1f} left"
+    if rule.threshold_min is not None:
+        limits = f"ready > {rule.threshold_min:.1f} or {limits}"
     return (
-        f"pulled {tracker.bytes_done / 1e9:.2f}/{tracker.bytes_total / 1e9:.2f} GB at "
-        f"{speed:.0f} MB/s, ~{prediction:.1f} min to ready{limit}"
+        f"pulled {tracker.bytes_done / 1e9:.2f}-{tracker.bytes_upper / 1e9:.2f} of "
+        f"{tracker.bytes_total / 1e9:.2f} GB, {bounds.low_mb_s:.0f}-{bounds.high_mb_s:.0f} MB/s "
+        f"so far, >= {pull_left:.1f} min pull + {rule.overhead_min:.1f} build to ready "
+        f"(abort if {limits})"
     )
 
 

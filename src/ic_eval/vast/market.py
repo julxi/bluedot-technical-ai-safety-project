@@ -146,8 +146,13 @@ def find_offer(offer_id: int, config: MachineConfig) -> dict[str, Any]:
     return found[0]
 
 
-def create_instance(offer_id: int, config: MachineConfig, label: str) -> int | None:
+def create_instance(
+    offer_id: int, config: MachineConfig, label: str, onstart_cmd: str
+) -> int | None:
     """Rent an offer, returning None if it is not available. Nothing is rented on failure.
+
+    `onstart_cmd` runs at every container start (vast.ai's `--onstart-cmd`); vast.ai stores it,
+    so it must not carry a secret.
 
     `--cancel-unavail` makes vast.ai reject an unavailable ask outright instead of parking a
     stopped instance on us, and it reports that as `no_such_ask` - both for an ask someone else
@@ -164,6 +169,8 @@ def create_instance(offer_id: int, config: MachineConfig, label: str) -> int | N
         str(config.disk),
         "--ssh",
         "--direct",
+        "--onstart-cmd",
+        onstart_cmd,
         "--label",
         label,
         "--cancel-unavail",

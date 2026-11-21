@@ -101,3 +101,24 @@ def test_failures_raise_failure_probability_and_fade(policy, rng):
     assert failing > 0.35
     assert failing > unknown + 0.2
     assert forgiven < failing - 0.2
+
+
+def test_censored_speed_is_an_interval_not_a_value(policy, rng):
+    """An unfinished pull says only "between low and high". A wide interval around the population
+    leaves the host near it; an interval far below it pulls the host down. Separate fits, so one
+    unusual host cannot shift the population for the other. Catches the 26-11-18 bug class: an
+    unfinished pull's lower bound used as its speed (that made host 701831 look like 3.9 MB/s),
+    or the interval ignored altogether."""
+    others = [SpeedObs(h, math.log(40.0), 1.0) for h in range(10, 16) for _ in range(3)]
+    advertised = {h: 1000.0 for h in range(10, 16)} | {99: 1000.0}
+
+    def host_99_mean(observation: SpeedObs) -> float:
+        posterior = _fit(Observations([*others, observation], [], [], [], advertised), policy, rng)
+        return float(posterior.theta[99].mean())
+
+    vague = host_99_mean(SpeedObs(99, math.log(1.0), 0.0, log_speed_max=math.log(400.0)))
+    assert abs(vague - math.log(40.0)) < 0.5
+    slow = host_99_mean(SpeedObs(99, -math.inf, 0.0, log_speed_max=math.log(4.0)))
+    assert slow < math.log(8.0)
+    low_end_as_value = host_99_mean(SpeedObs(99, math.log(1.0), 0.0))  # the old reading
+    assert low_end_as_value < vague - 1.0

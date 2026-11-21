@@ -20,8 +20,15 @@ likelihood. As weights fade, a host's posterior widens back to the population pr
 a bad day is forgiven and a bad host is eventually tried again, with no hard cut (Julian,
 26-11-18). The conjugate updates below simply use w-weighted sums.
 
-Speed observations are never censored: an aborted pull still yields the speed it had (boot.py),
-which is why the speed model needs no survival machinery.
+Speeds are re-derived from each attempt's recorded polls (pull.replay), not taken from the stored
+pull stats, so fixes to the pull parser apply to the whole history. A finished pull gives its
+exact speed. An unfinished one (aborted, failed mid-pull) gives an interval: its average speed so
+far lay between the unpacked bytes and those plus the next layer, over the time taken
+(pull.SpeedBounds). Such a censored observation is sampled as a latent value truncated to that
+interval (data augmentation in the Gibbs sampler). Approximation: the speed so far stands in for
+the whole pull's, which a slow start understates (the interval's top is generous, which helps).
+Before 26-11-18 the lower end was used as if exact, and a decaying live speed made healthy hosts
+look slow (live tests, convos/julian/26-11-18_vast_host_selection_LOG.md).
 """
 
 import math
@@ -29,7 +36,9 @@ from collections.abc import Sequence
 from typing import NamedTuple
 
 import numpy as np
+from scipy.stats import truncnorm
 
+from ic_eval.vast.pull import replay
 from ic_eval.vast.records import HOST_FAILURES, Attempt, End
 
 # Advertised download speed that x_h = 0 corresponds to.
@@ -64,9 +73,13 @@ FAILURE_KAPPA = 5.0  # prior strength of a host's failure rate around the pooled
 
 
 class SpeedObs(NamedTuple):
+    """One pull's log speed (log MB/s); censored if log_speed_max is set: then the true value
+    lies in [log_speed, log_speed_max], and log_speed may be -inf (nothing unpacked yet)."""
+
     host_id: int
-    log_speed: float  # log MB/s
+    log_speed: float
     age_days: float
+    log_speed_max: float | None = None
 
 
 class FlagObs(NamedTuple):
@@ -113,9 +126,18 @@ class Posterior(NamedTuple):
 
 
 def observations_from_records(
-    records: Sequence[Attempt | End], now: float, cache_window_days: float
+    records: Sequence[Attempt | End],
+    now: float,
+    cache_window_days: float,
+    min_censored_pull_s: float,
 ) -> Observations:
-    """Turn the rental history into model observations (see the module docstring)."""
+    """Turn the rental history into model observations (see the module docstring).
+
+    Pulls are replayed from the recorded polls. An unfinished pull becomes a censored speed only
+    after min_censored_pull_s (the abort warm-up): in its first seconds, connection setup makes
+    even the upper bound meaninglessly low. An attempt without polls (a crash of ours inside the
+    boot loop) gives no speed, overhead or cache observation.
+    """
     attempts = sorted((r for r in records if isinstance(r, Attempt)), key=lambda a: a.created_at)
     speed: list[SpeedObs] = []
     failure: list[FlagObs] = []
@@ -129,20 +151,39 @@ def observations_from_records(
         age = (now - a.created_at) / 86400
         assert age >= 0, f"attempt {a.instance_id} is in the future"
         advertised[host] = float(a.offer["inet_down"])
-        if a.pull.speed_mb_s is not None and a.pull.speed_mb_s > 0:
-            speed.append(SpeedObs(host, math.log(a.pull.speed_mb_s), age))
+        tracker = replay(a.image_layers, a.polls) if a.polls else None
+        bounds = tracker.speed_bounds(a.polls[-1].t) if tracker is not None else None
+        if bounds is not None and bounds.exact:
+            speed.append(SpeedObs(host, math.log(bounds.low_mb_s), age))
+        elif bounds is not None and bounds.elapsed_s >= min_censored_pull_s:
+            low = math.log(bounds.low_mb_s) if bounds.low_mb_s > 0 else -math.inf
+            speed.append(SpeedObs(host, low, age, log_speed_max=math.log(bounds.high_mb_s)))
         if a.outcome == "ready":
             failure.append(FlagObs(host, False, age))
             assert a.ready_at is not None
-            start = a.pull.ended_at if a.pull.ended_at is not None else a.created_at
+            pull_end = tracker.ended_at if tracker is not None else None
+            start = pull_end if pull_end is not None else a.created_at
             overhead_min = (a.ready_at - start) / 60
             assert overhead_min > 0, f"attempt {a.instance_id}: non-positive overhead"
             overhead.append(OverheadObs(math.log(overhead_min), age))
         elif a.outcome == "failed" and a.failure_type in HOST_FAILURES:
             failure.append(FlagObs(host, True, age))
+        # Whether the image was cached is known once bytes were downloaded (no), or the boot got
+        # past the pull without a download (yes; a cached boot can go straight to "running" with
+        # no pull message at all, test 3 on 26-11-18). A boot that failed before says nothing.
+        cache_known = tracker is not None and (
+            tracker.downloaded
+            or tracker.ended_at is not None
+            or any(p.status == "running" for p in a.polls)
+        )
         previous = last_ready.get((host, a.image))
-        if previous is not None and (a.created_at - previous) / 86400 <= cache_window_days:
-            cache.append(FlagObs(host, a.pull.cached, age))
+        if (
+            cache_known
+            and previous is not None
+            and (a.created_at - previous) / 86400 <= cache_window_days
+        ):
+            assert tracker is not None
+            cache.append(FlagObs(host, not tracker.downloaded, age))
         if a.outcome == "ready":
             assert a.ready_at is not None
             last_ready[(host, a.image)] = a.ready_at
@@ -270,8 +311,14 @@ def _fit_speed(
     index = {h: i for i, h in enumerate(hosts)}
     n_hosts = len(hosts)
     host_of = np.array([index[s.host_id] for s in obs.speed])
-    y = np.array([s.log_speed for s in obs.speed])
     w = np.array([discount(s.age_days, half_life_days) for s in obs.speed])
+    # Censored observations: latent values in [lo, hi], redrawn every iteration (data augmentation).
+    censored = np.array([s.log_speed_max is not None for s in obs.speed])
+    lo = np.array([s.log_speed for s in obs.speed])
+    hi = np.array([s.log_speed if s.log_speed_max is None else s.log_speed_max for s in obs.speed])
+    assert np.all(lo <= hi) and np.all(np.isfinite(hi)), "speed interval malformed"
+    # start inside the interval: its top when it is open below, else its middle
+    y = np.where(censored & ~np.isfinite(lo), hi, (np.where(np.isfinite(lo), lo, hi) + hi) / 2)
     for h in hosts:
         assert h in obs.advertised_mbps and obs.advertised_mbps[h] > 0, f"host {h}: no advert"
     x = np.log(np.array([obs.advertised_mbps[h] for h in hosts]) / ADVERTISED_REFERENCE_MBPS)
@@ -289,6 +336,18 @@ def _fit_speed(
     keep_every = (iterations - burn_in) // n_draws
     kept = {"alpha": [], "beta": [], "tau2": [], "sigma2": [], "theta": []}
     for it in range(iterations):
+        if censored.any():
+            # y_i | theta, sigma2 for censored i: normal truncated to its interval
+            mean_c = theta[host_of[censored]]
+            sd_c = np.sqrt(sigma2 / w[censored])
+            y[censored] = truncnorm.rvs(
+                (lo[censored] - mean_c) / sd_c,
+                (hi[censored] - mean_c) / sd_c,
+                loc=mean_c,
+                scale=sd_c,
+                random_state=rng,
+            )
+            wy_sum = np.bincount(host_of, weights=w * y, minlength=n_hosts)
         # theta_h | rest: normal, precision-weighted between the regression and the host's data
         mean_prior = design @ coef
         precision = 1 / tau2 + w_sum / sigma2

@@ -39,10 +39,30 @@ balance_tempering: 0.5
 max_attempts: 3
 max_total_boot_minutes: 30.0
 
-# Hard caps per attempt; inside them, the speed-based abort in boot.py decides.
-max_boot_minutes: 15.0
+# Hard caps per attempt; inside them, the speed-based abort in boot.py decides. Two phases, two
+# caps, so a host that has finished pulling isn't destroyed for a slow build. Values chosen by
+# Julian (26-11-21) to keep one attempt short.
+# - pull: renting until the image pull ends (download and unpack). 12, not lower: the fitted
+#   typical host (17.6 MB/s at 1000 Mbit/s advertised, 26-11-21) needs 10.3 min for this image,
+#   and the host choice does not know about the caps. This cap is also the budget the speed abort
+#   compares against (abort_budget_margin): at 9 min the 2x margin aborted good host 314882 in
+#   the replay of recorded boots.
+# - build: vast.ai's build step after the pull, until `running`. Observed 0.7 min (BuildKit) and
+#   5.4 min (Docker's legacy builder, host 314882) on 26-11-18, so a legacy-builder host on a
+#   busy day may exceed 6.
+max_pull_minutes: 12.0
+max_build_minutes: 6.0
 stall_minutes: 4.0
 abort_warmup_seconds: 90.0
+
+# The speed-based abort uses the best case so far: the pull's upper-bound speed (unpacked layers
+# plus the one in progress, over the time taken). It aborts when that best case still needs more
+# than the next-best offer (threshold), or the pull alone needs more than this factor x the pull
+# budget left (max_pull_minutes; the build step after the pull has its own cap). A factor, not a
+# strict comparison, because a boot can speed up once its downloads are done and only unpacking is
+# left. Julian chose 2x (26-11-18). In a replay of the recorded boots with the 12-min pull cap
+# (26-11-21), no good host exceeded 1.57x, and the one slow host passed 2x after 3.8 min.
+abort_budget_margin: 2.0
 
 # A host that ran the same image this recently may still have it cached (pull skipped).
 cache_window_days: 7.0

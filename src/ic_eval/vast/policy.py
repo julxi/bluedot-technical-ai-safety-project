@@ -13,7 +13,8 @@ is a distribution, which the modes use differently:
     exploit  lowest posterior-mean cost (the old "greedy")
     balance  Thompson sampling with the spread shrunk to `balance_tempering`: mostly exploits,
              now and then tries a host it knows little about (the default)
-    explore  Thompson sampling, full spread: deliberate exploration when nothing is urgent
+    explore  Thompson sampling, full spread: deliberate exploration. Run it when away (a slow
+             host costs little then), but it scores at the watching rate: see mode_settings
     hedge    lowest `hedge_quantile` of the cost, with failure aversion, longer memory and the
              "watching" value of time: for when a failure or a long wait must be avoided.
              It never explores (unknown hosts look risky to a pessimist; from an empty history
@@ -23,7 +24,6 @@ The selection probability of every offer under the mode is recorded with each re
 policies can later be evaluated on the logged data (off-policy evaluation).
 """
 
-import math
 from typing import Any, Literal, NamedTuple
 
 import numpy as np
@@ -37,11 +37,6 @@ MODES: tuple[Mode, ...] = ("exploit", "balance", "explore", "hedge")
 # Noise samples per draw for the day-to-day speed and overhead variation (common random numbers,
 # shared by all offers, so comparisons between offers are not blurred by sampling noise).
 N_NOISE = 32
-# Variance of the log speed measured live from a pull that is complete, in log MB/s squared. The
-# live estimate's variance grows as 1/fraction-done; at 10% done its sd is ~0.45 (a factor 1.6).
-# "Pull complete" counts only unpacked layers while later layers already download, so early live
-# speeds are underestimates; the warm-up (policy.yaml) and this wide variance absorb that.
-LIVE_LOG_SPEED_VAR_AT_FULL = 0.02
 
 
 class Evaluation(NamedTuple):
@@ -59,21 +54,22 @@ class Evaluation(NamedTuple):
 class AbortRule(NamedTuple):
     """What boot.py needs to decide, during a pull, whether to give up on the host."""
 
-    log_speed_mean: float  # predictive log MB/s of this host for this rental
-    log_speed_var: float
     overhead_min: float  # expected minutes from pull end to ready
-    threshold_min: float | None  # abort if the predicted remaining time exceeds this
+    threshold_min: float | None  # abort if even the best-case time to ready exceeds this
+    budget_margin: float  # ... or the best-case pull time left exceeds this x the pull budget left
 
 
 def mode_settings(mode: Mode, policy: PolicyConfig) -> tuple[float, float]:
     """(lambda $/min, failure aversion) of a mode.
 
     `hedge` is the mode for watching the boot, so it values time at the watching rate. `explore`
-    does too, although it is not for watching: setup speed matters mostly when watching, so that
-    is what exploration must learn about. Scoring exploration at the "away" rate, which barely
-    values time, almost never tried the fast-but-pricier hosts, and `hedge` afterwards chose as
-    badly as at random in one of three simulated markets; at the watching rate it found the best
-    host in all three (simulation, 26-11-18; tests/vast/test_simulation.py).
+    does too, although it is run when away: intentionally not the away rate (Julian asked about
+    this on 26-11-21 and kept the watching rate). Setup speed matters mostly when watching, so
+    that is what exploration must learn about; and Thompson sampling only tries a host when its
+    uncertainty can change the ranking, which setup time barely does at the away rate. Scored at
+    the away rate, exploration almost never tried the fast-but-pricier hosts, and `hedge`
+    afterwards chose as badly as at random in one of three simulated markets; at the watching
+    rate it found the best host in all three (simulation, 26-11-18; tests/vast/test_simulation.py).
     """
     match mode:
         case "hedge":
@@ -218,41 +214,55 @@ def next_best_setup(
     return float(evaluation.setup_min[best].mean())
 
 
+def abort_threshold(next_best_min: float | None, policy: PolicyConfig) -> float | None:
+    """Minutes of remaining boot beyond which switching to the next-best offer is better by more
+    than the tolerance band (an optimal-stopping comparison). None if there is no alternative."""
+    if next_best_min is None:
+        return None
+    band = max(policy.band_minutes, policy.band_fraction * next_best_min)
+    return next_best_min + policy.switch_overhead_minutes + band
+
+
 def abort_rule(
-    evaluation: Evaluation,
-    posterior: Posterior,
-    chosen: int,
-    next_best_min: float | None,
-    policy: PolicyConfig,
+    posterior: Posterior, next_best_min: float | None, policy: PolicyConfig
 ) -> AbortRule:
-    """Continue a pull only while its predicted remaining time beats switching to the next-best
-    offer by more than the tolerance band (an optimal-stopping comparison)."""
-    log_speed = evaluation.hosts[chosen].log_speed
-    threshold = None
-    if next_best_min is not None:
-        band = max(policy.band_minutes, policy.band_fraction * next_best_min)
-        threshold = next_best_min + policy.switch_overhead_minutes + band
+    """The rule for one attempt. The host's posterior speed is deliberately not used: the abort
+    acts only on what this pull has shown (its best case so far), so a host is never given up on
+    because the model expected it to be slow (replaced a prior-times-live-speed prediction that
+    aborted a host on no evidence, 26-11-18 live tests)."""
     overhead = np.exp(posterior.overhead_mu + posterior.overhead_sigma2 / 2)
     return AbortRule(
-        log_speed_mean=float(log_speed.mean()),
-        log_speed_var=float(log_speed.var() + posterior.sigma2.mean()),
         overhead_min=float(overhead.mean()),
-        threshold_min=threshold,
+        threshold_min=abort_threshold(next_best_min, policy),
+        budget_margin=policy.abort_budget_margin,
     )
 
 
-def predict_remaining(
-    rule: AbortRule, bytes_done: int, bytes_total: int, pull_elapsed_s: float
-) -> float | None:
-    """Predicted minutes until ready, combining the host's prior speed with the live pull speed
-    (a normal update in log space). None while nothing has been unpacked yet."""
-    assert 0 <= bytes_done <= bytes_total and pull_elapsed_s > 0
-    if bytes_done == 0:
-        return None
-    fraction = bytes_done / bytes_total
-    live = math.log(bytes_done / 1e6 / pull_elapsed_s)
-    live_var = LIVE_LOG_SPEED_VAR_AT_FULL / fraction
-    precision = 1 / rule.log_speed_var + 1 / live_var
-    mean = (rule.log_speed_mean / rule.log_speed_var + live / live_var) / precision
-    inverse_speed = math.exp(-mean + 0.5 / precision)  # E[1/v] for log-normal v, s/MB
-    return (bytes_total - bytes_done) / 1e6 * inverse_speed / 60 + rule.overhead_min
+def best_case_pull_left(bytes_upper: int, bytes_total: int, pull_elapsed_s: float) -> float:
+    """Minutes of pull left if it goes on at its best possible speed so far (bytes_upper /
+    elapsed: pull.SpeedBounds.high). The pull can still speed up (unpacking after parallel
+    downloads), which is why abort_reason compares against the budget with a margin."""
+    assert 0 < bytes_upper <= bytes_total and pull_elapsed_s > 0
+    return (bytes_total - bytes_upper) / bytes_upper * pull_elapsed_s / 60
+
+
+def abort_reason(rule: AbortRule, pull_left_min: float, pull_budget_left_min: float) -> str | None:
+    """Why to give up on the host now, or None to keep waiting.
+
+    Two comparisons, each in its own terms. Against the next-best offer: the whole best-case time
+    to ready (pull left + the pooled overhead after the pull), since that offer's setup time
+    covers everything. Against the budget: the pull alone, because the pull has its own cap
+    (max_pull_minutes) and the build step after it has a separate one (max_build_minutes).
+    """
+    to_ready_min = pull_left_min + rule.overhead_min
+    if rule.threshold_min is not None and to_ready_min > rule.threshold_min:
+        return (
+            f"even at its best speed so far it needs {to_ready_min:.1f} more min to ready > "
+            f"{rule.threshold_min:.1f} min for the next-best offer (switch and band included)"
+        )
+    if pull_left_min > rule.budget_margin * pull_budget_left_min:
+        return (
+            f"even at its best speed so far its pull needs {pull_left_min:.1f} more min > "
+            f"{rule.budget_margin:g} x the {pull_budget_left_min:.1f} min of pull budget left"
+        )
+    return None

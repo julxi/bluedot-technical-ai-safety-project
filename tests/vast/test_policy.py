@@ -7,11 +7,12 @@ import numpy as np
 from ic_eval.vast.model import FlagObs, Observations, SpeedObs, fit
 from ic_eval.vast.policy import (
     AbortRule,
+    abort_reason,
     abort_rule,
+    best_case_pull_left,
     evaluate,
     mode_settings,
     next_best_setup,
-    predict_remaining,
     propensities,
     select,
     selection_scores,
@@ -102,25 +103,38 @@ def test_cache_eligible_host_predicted_faster(policy, rng):
     assert cached.setup_min[1].mean() < plain.setup_min[1].mean()
 
 
-def test_abort_rule_threshold_and_prediction(policy, rng):
+def test_abort_rule_threshold(policy, rng):
     offers, posterior = _market(policy, rng)
     lam, aversion = mode_settings("exploit", policy)
     ev = evaluate(offers, posterior, IMAGE_BYTES, set(), 2.0, lam, aversion, policy, rng)
-    chosen = 2  # the unknown host
-    nxt = next_best_setup(ev, chosen, "exploit", policy)
+    nxt = next_best_setup(ev, 2, "exploit", policy)
     assert nxt is not None
-    rule = abort_rule(ev, posterior, chosen, nxt, policy)
-    assert rule.threshold_min is not None and rule.threshold_min > nxt
-    # 10% of the image in 120 s = ~9 MB/s: ~18 min still to go -> beyond the threshold
-    slow = predict_remaining(rule, IMAGE_BYTES // 10, IMAGE_BYTES, 120.0)
-    # 40% in 120 s = ~36 MB/s: ~3 min to go -> fine
-    fast = predict_remaining(rule, IMAGE_BYTES * 4 // 10, IMAGE_BYTES, 120.0)
-    assert slow is not None and fast is not None
-    assert slow > rule.threshold_min > fast
+    rule = abort_rule(posterior, nxt, policy)
+    assert rule.threshold_min is not None
+    band = max(policy.band_minutes, policy.band_fraction * nxt)
+    assert rule.threshold_min == nxt + policy.switch_overhead_minutes + band
+    assert rule.budget_margin == policy.abort_budget_margin
+    assert abort_rule(posterior, None, policy).threshold_min is None
 
 
-def test_prediction_needs_progress():
-    rule = AbortRule(math.log(30), 0.5, 1.0, 10.0)
-    assert predict_remaining(rule, 0, IMAGE_BYTES, 100.0) is None
-    done = predict_remaining(rule, IMAGE_BYTES, IMAGE_BYTES, 100.0)
-    assert done is not None and math.isclose(done, 1.0)
+def test_best_case_pull_left():
+    """At most 2 of 10 GB in 100 s: at that best speed (20 MB/s) 8 GB take 400 s more."""
+    assert math.isclose(best_case_pull_left(2_000_000_000, 10_000_000_000, 100.0), 400 / 60)
+    assert best_case_pull_left(10**10, 10**10, 100.0) == 0.0
+
+
+def test_abort_reason():
+    """Threshold strictly, on the time to ready (overhead included); the budget only beyond the
+    margin and on the pull alone (the build step has its own cap). Catches a margin applied the
+    wrong way round, the budget compared strictly, or the overhead counted against the pull
+    budget or left out of the comparison with the next-best offer."""
+    rule = AbortRule(overhead_min=1.0, threshold_min=10.0, budget_margin=2.0)
+    assert abort_reason(rule, pull_left_min=8.5, pull_budget_left_min=8.0) is None  # 9.5 < 10
+    reason = abort_reason(rule, pull_left_min=9.5, pull_budget_left_min=12.0)  # 10.5 > 10
+    assert reason is not None and "next-best" in reason
+    reason = abort_reason(rule, pull_left_min=8.5, pull_budget_left_min=4.0)  # 8.5 > 2 x 4
+    assert reason is not None and "budget" in reason
+    # 7.5 + 1.0 overhead > 2 x 4, but the pull alone is not: the overhead isn't pull budget
+    assert abort_reason(rule, pull_left_min=7.5, pull_budget_left_min=4.0) is None
+    no_alternative = AbortRule(overhead_min=1.0, threshold_min=None, budget_margin=2.0)
+    assert abort_reason(no_alternative, pull_left_min=30.0, pull_budget_left_min=20.0) is None

@@ -465,3 +465,358 @@ C: (transcribed from chat) Add them as proper rules. Linting should be part of d
 C: (transcribed from chat) please reformat tasks as well
 
 26-11-18, Claude Opus 5.5 — *tasks/ included in the checks*: `tasks/` added to the ruff paths in the `Makefile` and `pyproject.toml`, to basedpyright's `include`, and to the scope line in `docs/CODING.md`. `make format` re-wrapped `tasks/hello.py` to 100 columns: three statements joined onto one line each, layout only, no code change. It had no lint or type findings. [verified: `make check` 26-11-18, all checks passed, basedpyright 0 errors and 0 warnings, 21 tests passed]
+
+---
+
+C: (transcribed from chat) Can you do some (2-3) testsruns of the new host selection?
+
+---
+
+26-11-18, Claude Opus 5.5 — *live test 1: two boot bugs fixed, staircase pull progress found*; context: this topic's SUMMARY, `cli.py`, `boot.py`, `policy.abort_rule`, `model.observations_from_records`; the run logs (kept in my session scratchpad, not the repo) and the records in `src/ic_eval/vast/data/rentals.jsonl`. Plan: three rent -> destroy cycles, modes `balance`, `explore`, `hedge` in that order (each sees the records of the earlier ones), each with `--timer 40m` as a safety net.
+
+**Test 1, first try (`balance`): crash in the boot loop.** Host 842447 (RTX A6000, $0.369/h, P(pick) 0.926). Its first status with a pull message was already a layer event ("41eaa41e205a: Download complete"), so the pull started in the same poll and `predict_remaining` got 0 s elapsed: `AssertionError` in `policy.py`. The launcher destroyed the instance and recorded the attempt as `failed / ours` (not counted against the host). That record has empty `polls` and `pull`, because the exception fired inside `wait_for_boot` before it returned them: a crash inside the boot loop loses its poll history. Not fixed; minor.
+- Fix in `boot.py`: predict only once the warm-up has passed and elapsed time > 0; the progress line returns nothing at 0 s elapsed (with "Already exists" in the first poll it would have divided by zero). Regression test `test_wait_for_boot_first_pull_message_in_first_poll` (fake clock, fake `show_instance`, both variants). [verified: the test fails on both variants without the fix and passes with it; `make check` passed, 23 tests]
+
+**Test 1, second try (`balance`): three attempts, no machine.** The first choice's offer was gone (likely our just-destroyed instance not yet released); the re-choose path took the next offer.
+
+| # | host | GPU, $/h | P(pick) | outcome | recorded pull speed |
+|---|------|----------|---------|---------|---------------------|
+| 1 | 169171 (VN) | L40, 0.404 | 0.163 | `aborted_slow` after 5.8 min, predicted 32.3 more min | 1.1 MB/s (0.37 GB "done") |
+| 2 | 701831 (TH) | RTX 4090 48 GB, 0.422 | 0.694 | `aborted_slow` after 2.2 min, predicted 43.4 min vs threshold 16.3 | 3.9 MB/s (0.37 GB "done") |
+| 3 | 314882 (US) | RTX A6000, 0.563 | 0.286 | `running` after 12.4 min, then `failed / ssh`: sshd "bad ownership or modes" on authorized_keys for 300 s (known host-fault marker, `remote.py`) | 15.2 MB/s (wrong, see below) |
+
+Cost of test 1, estimated as instance time × listed price (billing not checked): about $0.22, most of it attempt 3. No instance left running [verified: `vastai show instances-v1`, 0 instances].
+
+**Bug 2, fixed: legacy-builder hosts.** `PullTracker` ended the pull only at a BuildKit line ("#..."). Host 314882 uses Docker's legacy builder: after the last layer (413 s after creation) came "DEPRECATED: The legacy builder ..." (419 s), then "Step 3/8 : ..." and " ---> <id>" lines until `running` at 744 s. The 5.4-min build was counted as pull time, so the recorded speed is 15.2 MB/s instead of about 28 MB/s (10.86 GB over 30 s -> 413 s). Fix: `BUILD_LINE` regex in `boot.py` (BuildKit, the deprecation notice, `Step n/m :`, `--->`). Tests on the verbatim messages, plus one that layer events never match. [verified: `make check` passed, 26 tests]
+
+**Problem 3, not fixed, needs a decision: pull progress is a staircase, so the speed abort fires on no evidence.**
+- Progress counts only fully unpacked layers ("Pull complete", in manifest order). The image's first 0.37 GB is small layers, then come layers of 4.15 GB and 3.33 GB. So "done" sits at 0.37 GB for minutes on every host, the live speed (done / elapsed) decays the whole time, and the predicted remaining time rises.
+- On host 314882 (which pulled fine), the predicted remaining time swung between 3.7 and 13.4 min as "done" jumped 0.37 -> 1.87 -> 6.03 -> 10.06 GB. It survived because its threshold was 30.0 min.
+- Host 701831 was aborted about 100 s into its pull, with 0.37 GB "done". At that point a host slower than roughly 40 MB/s would still be unpacking the 4.15 GB layer, so the abort had essentially no evidence that this host was slow. Its 3.9 MB/s and host 169171's 1.1 MB/s are artefacts and now sit in the history as speed observations. (169171 is probably genuinely slow: 8.8 MB/s in the backfilled rental. 701831 is unknown.)
+- Download and unpacking are separate: on 314882 both big layers reported "Download complete" by 78 s after creation, but "Pull complete" only at 205 s and 329 s. So this "pull speed" is mostly disk-unpack speed, not network speed.
+- Nothing is lost: every poll's raw message is in the records, so better measures can be recomputed for all past attempts.
+
+Options (my recommendation first):
+- (a) **Censored progress plus replay.** While a layer is in flight, use the speed measured up to the last completed layer, and treat "the current layer is not done after t s" as an upper bound on speed (censoring), rather than as zero progress. Additionally, `observations_from_records` re-derives pull stats by replaying the recorded polls through the current `PullTracker`, so parser fixes apply retroactively and the wrong speeds above are corrected. Moderate change.
+- (b) **Abort only between layers:** evaluate the abort rule only at a layer boundary or once the elapsed time exceeds what the current layer needs at the threshold speed. Smaller change, coarser.
+- (c) **Model network and unpack separately**, using "Download complete" events for network bytes. Most faithful, but most code, and the status shows only one message line per 5-s poll, so many events are missed.
+
+C: I can't say I fully understand. But my suggestion would be that we can use an upper bound on dowload speed. If the layer is x Mb big and we haven't downloadad it after y s then download for that layer is smaller than x mb / y s. We can use that number for the abortion, right?
+
+Answer (26-11-18, Claude Opus 5.5): Your reasoning is right about the past, and it is the core of option (a), stated more simply. Layers are unpacked one after another, so if the 4.15 GB layer isn't finished after 100 s, the host has unpacked less than 0.37 + 4.15 GB in 100 s: its average so far is below 45 MB/s. But it is **not a bound on the future**, and that matters for the abort.
+- **Why:** a boot has two phases. First Docker downloads several layers in parallel (network), then it unpacks them one by one (CPU and disk). On host 314882 both big layers were downloaded 78 s after creation; from then on only unpacking was left, and that ran faster than the average up to then. So "remaining bytes / upper-bound speed" is not a guaranteed minimum for the remaining time.
+- **Replay** of all 7 recorded boots through the current `PullTracker` (script: `scratch/replay_upper_bound_26-11-18.py`; overhead after the pull set to the pooled 0.9 min) [verified: replay 26-11-18]:
+  - **Upper bound vs the abort threshold** (next-best offer + switch + band): never fires in any of the 7. It would have kept host 701831: at its abort, the bound still allowed 19 MB/s, i.e. 8.7 more min, under the threshold of 16.3. So the false abort goes away. But it also never stops the genuinely slow host 169171: its threshold was 32.3 min, so only the 15-min cap ends it.
+  - **Upper bound vs the boot budget left** (your second comment): it stops 169171 at 2.7 min. But it also stops 314882 at 2.9 min, a host whose pull finished at about 7 min. That is the future-speed problem above.
+  - **With a margin:** abort when the optimistic remaining time exceeds 1.5× the budget left. That keeps 314882 (its largest ratio was 1.23) and stops 169171 at 3.6 min (at 4.8 min in the backfilled rental). Script: `scratch/replay_upper_bound_margin_26-11-18.py`.
+- **Caveat:** that margin is fitted to two boots of one slow host and one good host with a slow start. It should be re-checked by replay as rentals accumulate.
+- **Proposal:** use your upper bound for the abort decision, both against the threshold and, with the 1.5× margin, against the budget, instead of the current point estimate. Separately, for what the model learns, an aborted attempt contributes "speed below the bound" (a censored observation) instead of a made-up speed. And the model reads speeds by replaying the recorded polls, which also replaces the wrong 1.1, 3.9 and 15.2 MB/s already in the history.
+
+**Smaller finding: the speed abort and the 15-min hard cap don't know about each other.** The abort threshold is "next-best offer's setup + switch + band" (28-32 min today), while `max_boot_minutes` is 15. A pull predicted to need 15-30 more min is left running until the cap kills it. The cost model also predicts mean setups above 15 min for many offers without accounting for the cap. Suggestion: abort when the predicted remaining time exceeds the threshold *or* the remaining boot budget.
+
+C: how strict is this exceeding. Let's say the prediction is 10 s behind. The machine can still catch up, right?
+
+Answer (26-11-18, Claude Opus 5.5): Yes, it can, and the rule should allow for that.
+- **Today, against the next-best offer:** the comparison itself is strict (any amount over the threshold aborts), but the threshold already contains slack. It is the next-best offer's expected setup time + 1 min for switching + the band (at least 3 min, or 20%). So a host "10 s behind" the alternative is nowhere near an abort; it must look more than 4 min worse.
+- **Against the 15-min cap (my suggestion):** a strict comparison would be wrong here. The predictions in the traces swung by several minutes within one boot, so 10 s is noise. Hence the 1.5× margin in my answer above: abort only when even the optimistic remaining time is 1.5 times the budget left. In the replay, the good host's highest ratio was 1.23.
+- **The cap itself is hard today:** at 15 min the instance is destroyed even if it would be ready at 15:10. A softer cap would let it run on a few minutes once the pull is complete and only vast.ai's build step is left. My suggestion: once the pull has ended, allow up to 5 more minutes. Your call: do you want the cap softened like that, or kept hard?
+
+Test 2 (`explore`) is running.
+
+---
+
+26-11-18, Claude Opus 5.5 — *live tests 2 and 3, and the model after all three*; context: my entry *live test 1: two boot bugs fixed, staircase pull progress found* above; run logs, `rentals.jsonl`, `ic-vast stats`. Both tests ran with the two fixes from that entry (uncommitted).
+
+**Test 2 (`explore`): ready.** Host 134600 (RTX 6000 Ada, Germany, $0.649/h, never seen before, P(pick) 0.284). Ready in 4.6 min, predicted 11.9 [2.3, 24.1]. Pull 18 s -> 219 s after creation at 54 MB/s; the build step was split off correctly (pull end about 45 s before `running`), so the legacy/BuildKit fix gave a plausible measurement here. Probes: Hugging Face download 162 MB/s, 122 bf16 TFLOPS, 798 GB/s copy, power limit 300 W of 300 W, CPU quota 11.52 of 96 cores. `ic-vast destroy` recorded the end (1 watchdog start, no restarts). [verified: live rental 26-11-18, single run]
+
+**Test 3 (`hedge`): ready.** It chose host 134600 again (P(pick) 1.000, predicted 4.7 [0.8, 9.6]), a different offer on a different machine (157018 vs 144027). Ready in 0.7 min, image cached (`pull.cached` true). So the image cache held across machines of one host, and keying cache eligibility by host (`model.cache_eligible_hosts`) was right this time. (Whether that's the host sharing its cache or vast.ai pre-caching its own `vastai/vllm` image, one case doesn't say.) [verified: live rental 26-11-18, single run]
+
+No instance left running after either test [verified: `vastai show instances-v1`]. Estimated cost of all three tests (instance time × listed price, billing not checked): about $0.30.
+
+**What the tests verified end to end:** offer search and scoring, mode-dependent choice, the taken-offer re-choose path, speed abort (fired twice), automatic re-rent up to 3 attempts, the per-session boot budget, ssh host-fault detection, watchdog + timer, repo fetch + rsync, probes, `destroy` with its `end` record, cache-hit prediction. Not exercised: the watchdog restart after a container reboot (from the launcher topic), `--script`, `--offer_id`, `stall` and `boot_timeout` caps.
+
+**`ic-vast stats` after the tests (8 attempts):**
+- Typical speed at 1000 Mbit/s advertised: 12.7 MB/s [7.1, 19.5]. Day-to-day spread sigma 0.77 (log). Pooled failure rate 0.14. Overhead (pull end -> ready) 0.89 min.
+- Host 169171's two observations are 8.8 and 1.1 MB/s; 701831's single one is 3.9 MB/s. The 1.1 and 3.9 are staircase artefacts (previous entry, problem 3), and they pull the shared speed down and inflate sigma. [concluded: from the progress traces in the previous entry; the true speeds of these two attempts are unknown]
+- Calibration: 1 of 2 predicted rentals inside its 10-90% interval (the cached 0.7 min fell just under its 0.8 lower bound). Too few to judge.
+
+**Small things seen:**
+- The `obs` column counts discounted speed plus failure observations, so one rental shows as about 2.0. Reads like "2 rentals". Suggest renaming the column (e.g. `evidence`) or counting rentals.
+- The log is noisy: vast.ai's ssh welcome banner on every ssh call, and rsync's `--info=progress2` output, which floods the log when not on a terminal.  
+C: what can be done about this?
+
+Answer (26-11-18, Claude Opus 5.5): Two small changes in `remote.py`, about 10 lines.
+- **ssh:** add `-o LogLevel=ERROR` to the ssh options and to the `bluedot-vast` entry the launcher writes into the ssh config. That hides vast.ai's "Welcome to vast.ai ..." login banner and the "Permanently added ... to the list of known hosts" warning on every call. [assumed: the welcome text is sshd's pre-login banner, which OpenSSH prints only at log level INFO or above; to be checked on the next rental] Real errors still show, and the ssh-fault detection doesn't depend on these lines: it reads `vastai logs`.
+- **rsync:** use the progress display (`--info=progress2`) only when the output is a terminal. Otherwise print a one-line summary (`--info=stats1`). In a terminal you keep the live progress bar, and in a log file you get one line instead of hundreds.
+
+Say if you want them; they need a rental to verify.
+- A crash inside `wait_for_boot` loses that attempt's polls from its record (previous entry).
+
+**Recommended next steps, in order:**
+1. Fix the staircase (previous entry, option (a): censored progress plus replaying recorded polls in `observations_from_records`). Replay also corrects the wrong speeds already in the history, without editing `rentals.jsonl`.
+2. Abort also when the predicted remaining time exceeds the remaining boot budget.
+3. Commit the two fixes and the new records.
+
+---
+
+C: (transcribed from chat) What about a 2x margin?
+
+26-11-18, Claude Opus 5.5 — *2x margin for the budget abort*; context: the replay under Julian's upper-bound comment (`scratch/replay_upper_bound_margin_26-11-18.py`). [verified: replay 26-11-18] With 2× instead of 1.5×, the slow host 169171 is stopped at 4.5 min instead of 3.6 in live test 1, and at 4.8 min in both cases in the backfilled rental. No good host is stopped (the highest ratio among them was 1.23, on host 314882). I recommend 2×, because the costs are lopsided: stopping a slow host about 1 min later costs under a cent of GPU time, or about $0.10 of waiting at the watching rate. Wrongly stopping a good host loses all its minutes so far, plus a re-rent of a probably worse offer. The margin still rests on very few boots; re-check it by replay as rentals accumulate.
+
+---
+
+C: (transcribed from chat) I want the log fixes. THe 2x margin. I need more infor about the 15-min limit to decide
+
+C: (transcribed from chat) Use scipy if you need
+
+26-11-18, Claude Opus 5.5 — *upper-bound abort, censored speeds, replayed history, quiet output; facts on the 15-min cap*; context: Julian's two chat messages above, my answers under his comments in *live test 1: ...*, the code in `src/ic_eval/vast/`, the recorded boots.
+
+## Implemented (uncommitted)
+
+- **`pull.py` (new):** `PullTracker`, moved out of `boot.py` so the model can use it, plus:
+  - `SpeedBounds`: while a pull runs, low = unpacked bytes / elapsed, high = (those + the next layer) / elapsed (Julian's bound). Both are equal once the pull has ended.
+  - `replay(layers, polls)`: the tracker's state after a record's polls.
+- **Abort** (`policy.py`, `boot.py`) [decided: 2× margin, Julian in chat, transcribed above]:
+  - The old prediction (host prior × live speed, `predict_remaining`) is removed. `best_case_remaining` computes the remaining time at the upper-bound speed.
+  - `abort_reason` aborts when that best case exceeds the threshold (next-best offer + switch + band), or exceeds `abort_budget_margin` × the boot budget left. The margin is `2.0` in `configs/policy.yaml`.
+  - The host's posterior is deliberately no longer used for the abort, so a host is never given up on because the model expected it to be slow.
+  - The 90-s warm-up stays.
+  - The progress line now shows both bounds, e.g. "pulled 0.37-4.52 of 10.86 GB, 4-45 MB/s so far, >= 3.3 min to ready (abort above 16.3 or 2 x 12.8 left)".
+- **Model** (`model.py`, scipy added as a dependency):
+  - `observations_from_records` replays every attempt's polls instead of reading the stored pull stats. A finished pull gives an exact speed; an unfinished one gives a censored `SpeedObs` (`log_speed_max` set), counted only after the warm-up.
+  - The Gibbs sampler draws censored values as latent normals truncated to their interval (`scipy.stats.truncnorm`).
+  - Cache observations count only when the replay can tell. A boot that failed before any pull message is no longer counted as a cache hit.
+  - Approximation, stated in the module docstring: the speed so far stands in for the whole pull's speed.
+- **Output** (`remote.py`): ssh `LogLevel=ERROR`, in the options and in the generated ssh config. rsync shows `--info=progress2` only on a terminal, otherwise `--info=stats1`. [verified: with OpenSSH 9.6, `LogLevel=ERROR` still prints "Permission denied (publickey)", which the ssh-fault check needs; checked against github.com, 26-11-18] Not yet seen on a rental.
+- **`ic-vast stats`** shows replayed speeds: exact, or a range for an unfinished pull.
+
+## Tests [verified: `make check` 26-11-18: format, lint, basedpyright 0/0, 36 passed]
+
+- **`tests/vast/test_recorded_boots.py` (new):** the six recorded boots (copied verbatim to `tests/vast/data/boots_26-11-18.jsonl`) run through `wait_for_boot` with a fake clock.
+  - Hosts 314882, 134600, 682584 and 701831 must not be aborted.
+  - Host 169171 (both boots) must be aborted within 6 min.
+  - Mutation check: with margin 1.0, 314882 is aborted (test fails); with margin 100, 169171 is not stopped early (tests fail). [verified 26-11-18]
+- **Further tests:** `best_case_remaining` and `abort_reason` (threshold strict, budget only beyond the margin), `abort_rule`'s threshold, replayed observations (exact / interval / none, plus the warm-up), and censored speeds in the model (a vague interval leaves a host at the population, one far below pulls it down, the old "lower end as value" reading is clearly different).
+- **A test design slip of mine, fixed before it counted:** the first censored-model test put three unusual hosts in one fit, so the slow ones shifted the population and the vague host followed it. It's now split into separate fits.
+
+## Effect on the history [verified: `ic-vast stats` 26-11-18, no record edited]
+
+| | before (stored stats) | after (replayed) |
+|---|---|---|
+| host 314882 | 15.2 MB/s | 28 MB/s |
+| host 701831 | 3.9 MB/s | 4-19 MB/s (interval); posterior 13.4 [7.1, 20.8] |
+| host 169171, live boot | 1.1 MB/s | 1-6 MB/s (interval) |
+| typical speed at 1000 Mbit/s adv. | 12.7 MB/s | 18.1 MB/s |
+| day-to-day spread sigma (log) | 0.77 | 0.40 |
+
+## The 15-min cap: what Julian needs to decide
+
+**What it is:** `max_boot_minutes: 15` ends one attempt if vast.ai hasn't reported `running` 15 min after renting. ssh, sync and probes come after and are not included. On top of it:
+- `max_total_boot_minutes: 30` across the up to 3 attempts of one `ic-vast rent`;
+- `stall_minutes: 4`: the status message unchanged for 4 min.
+
+**What ends a boot before the cap:** status `missing`/`exited`, a vanished instance, the DNS-failure marker, a stall, and the speed abort.
+
+**History of the cap:**
+- In the SPD repo it fired once (as a 900-s limit), on host 124072 (26-10-06). That host could not resolve vast.ai's DNS, which the launcher now detects directly from the status message.
+- In this repo it has never fired.
+
+**Observed boots (rent to `running`), from the replay:**
+
+| host | pull ended | `running` | build step | note |
+|---|---|---|---|---|
+| 134600 | 3.7 min | 4.4 min | 0.7 min | BuildKit |
+| 314882 | 7.0 min | 12.4 min | 5.4 min | Docker's legacy builder |
+| 682584 | 5.7 min | (not in the backfill) | - | ready at 6.6 min |
+| 134600 | cached | 0.5 min | - | |
+
+So one of the two full boots with a recorded build step used 12.4 of the 15 min, mostly on vast.ai's build step, which our host choice doesn't model per host (the overhead is pooled).
+
+**The cap now does two jobs:**
+1. A last resort against hangs nothing else recognises, e.g. a build that keeps printing output, so the stall cap never fires.
+2. Since today, it sets the boot budget that the abort compares against (2× budget left). A larger cap therefore also makes the abort more lenient towards slow pulls.
+
+**The cases, with 314882 as the example:**
+- If its pull had been about 40% slower (ending after 9.6 min instead of 7.0), its 5.4-min build would have taken it past 15 min, and the cap would have destroyed a host that had already finished pulling. That loses about 15 min, plus a re-rent of the next offer (4-12 min in these tests).
+- Without a cap, a host stuck in a looping build would never be given up on, and the total boot budget of 30 min would be its only bound.
+
+**Options:**
+- **(a) Keep it strict at 15 min.** Simple. A host whose build overruns is lost after all the waiting.
+- **(b) Extend only once the pull has ended:** allow up to 5 more min once only the build is left (my recommendation).
+  - In this phase there's no network uncertainty left, and the observed builds took 0.7 and 5.4 min.
+  - The budget the abort sees during the pull stays at 15 min, so it stays as strict as now.
+  - The extension counts against the 30-min total.
+  - Worst case: a hanging build costs 5 more min.
+- **(c) Raise the cap to 20 min overall.** Also tolerates overruns, but it makes the abort lenient during the pull too (2× budget left grows by 10 min), so slow pulls are stopped later.
+
+This rests on few boots: two full builds with timings, one of them on the legacy builder; how common that builder is among hosts is unknown.
+
+## Not yet verified on a rental
+
+The new abort live, the quiet ssh/rsync output, and the extension (if chosen). A live rental would check the first two (about $0.05-0.10).
+
+---
+
+C: (transcribed from chat) Id like to close the launcher work and decide the 15-minute boot cap. I think I'd like different caps for dowloading and build step
+
+26-11-21, Claude Opus 5.5 — *separate pull and build caps*; context: this topic's SUMMARY, my entry *upper-bound abort, ...; facts on the 15-min cap* (the options there were (a) strict, (b) up to 5 more min once only the build is left, (c) 20 min overall), `boot.py`, `policy.py`, `cli.py`, the recorded boots. Julian's request is a variant of (b) with a cap of its own for the build.
+
+## Implemented (uncommitted)
+
+- **Two caps per attempt** (`configs/policy.yaml`; `max_boot_minutes` replaced):
+  - `max_pull_minutes: 15`: from renting until the pull ends (download and unpack). Time before the first pull message counts here too, and so does a boot whose pull messages are never seen.
+  - `max_build_minutes: 10`: from the pull's end (the first build line, `pull.PullTracker.ended_at`) until `running`.
+  - Both end no later than what remains of `max_total_boot_minutes: 30` across attempts. One attempt can now take up to 25 min.
+  - Both fail as `boot_timeout`, which counts against the host as before; the detail text says which phase. No new failure type, so the record schema is unchanged.
+- **Values, my proposal, not ratified:**
+  - Pull 15 min: the pull cap also sets the budget the speed abort compares against (2× margin). Keeping the old whole-boot value keeps the abort as strict as when Julian chose the 2× margin.
+  - Build 10 min: the two observed builds took 0.7 min (BuildKit) and 5.4 min (Docker's legacy builder, host 314882). 10 is about 2× the slow one. The costs are lopsided, as with the margin: a hanging build costs at most the cap, while a cut-off build loses the whole pull plus a re-rent.
+- **The budget abort now compares the pull alone** (`policy.abort_reason`, `best_case_remaining` replaced by `best_case_pull_left`). Before, it compared the best-case time to ready (pull left + pooled overhead of about 0.9 min) with the boot budget left. Now the build has its own cap, so the pull budget only has to cover the pull. The comparison with the next-best offer still uses the whole time to ready, since that offer's predicted setup covers everything.
+- **Output:** the boot line shows "... >= X min pull + Y build to ready (abort if ready > T or pull > 2 x P left)". During the build it shows the minutes since the pull ended. `rent` logs both caps at each attempt.
+
+## Checks
+
+- [verified: `make check` 26-11-21: format, lint, basedpyright 0/0, 38 passed]
+- **New tests** (`tests/vast/test_boot_and_records.py`): a scripted boot with no speed data, so only the caps decide.
+  - Pull ends at 14 min, build takes 6 min: must reach `running` (a single 15-min cap would have destroyed it).
+  - A build that never ends: stopped 10 min after the pull ended, at 24-24.5 min.
+  - A pull that never ends: stopped at 15-15.5 min.
+  - With 16 min of the total left: the build gets 2 min, not 10.
+- **Mutation check** [verified 26-11-21]: counting the build cap from renting instead of from the pull's end fails both new tests.
+- **Replay of the six recorded boots** (scratch script, not in the repo) [verified 26-11-21]: no good host stopped; 314882 reaches `running` at 12.4 min; the slow host 169171 is stopped at 4.7 and 4.6 min (before: 4.8 and 4.5). Leaving the overhead out of the budget comparison changed the stop time by at most 0.1 min.
+
+## Open
+
+- Julian to ratify the values 15 and 10.
+- Not exercised on a rental: the new abort, the caps, the quiet ssh/rsync output. Also still open from the launcher topic: the watchdog restart after a container restart (`convos/julian/26-11-18_vast_gpu_runner_SUMMARY.md`). One short rental with `vastai reboot instance` would cover all of them.
+
+---
+
+C: (transcribed from chat) I don't want 15 + 10 cap minutes. That's too long. Maybe 9 + 6 minutes. Also doesn't it make sense that explore is for away, otherwise it's not really exploring, I'd say
+
+26-11-21, Claude Opus 5.5 — *9 + 6 caps: what they break, and explore's rate*; context: my entry *separate pull and build caps* above; a replay of the six recorded boots under several caps (scratch script, not in the repo); `ic-vast stats` and `ic-vast offers` (read-only market query, nothing rented) on 26-11-21. Nothing changed in the code yet; the code still has 15 + 10.
+
+## 9 + 6 with the current abort stops a good host
+
+The pull cap is also the budget the speed abort compares against (abort when the best-case pull time left > 2 × the pull budget left). A smaller cap makes the abort stricter. Replay [verified 26-11-21]:
+
+| pull cap / build cap / margin | 314882 (good; pull ended 7.0 min, build 5.4) | 682584 (good) | 169171 (slow) stopped at | largest ratio of 314882 |
+|---|---|---|---|---|
+| 15 / 10 / 2 (current code) | running at 12.4 | kept | 4.6-4.7 min | 1.17 |
+| 9 / 6 / 2 | **aborted at 3.1 min** | kept (ratio 1.50) | 2.8-2.9 min | 2.10 |
+| 9 / 6 / 2.5 | running (4% slack) | kept | 3.2-3.3 min | 2.40 |
+| 9 / 6 / 3 | running | kept | 3.7 min | 2.40 |
+| 12 / 6 / 2 | running | kept | 3.8 min | 1.57 |
+
+The ratio is pull left / pull budget left at its worst moment; the abort fires above the margin. So 9 + 6 needs the margin raised to about 3×, which still stops the slow host earlier than now (3.7 vs 4.6 min). With 9 + 6, 314882 itself fits with 2.0 min to spare on the pull and 0.6 min on the build.
+
+## 9 min is below what the model expects of a typical host
+
+- [verified: `ic-vast stats` 26-11-21] The fitted typical speed at 1000 Mbit/s advertised is 17.6 [11.1, 25.4] MB/s. At 17.6 MB/s the 10.86 GB image takes 10.3 min to pull. So a host of typical speed would be destroyed by a 9-min pull cap, and a cap counts as a host failure (`boot_timeout`).
+- [verified: `ic-vast offers` 26-11-21, mode `balance`] Of the 40 offers listed, 9 have a predicted mean setup time under 9 min, 5 of them on the two hosts we know are fast (682584, 134600). The offer `balance` would rent now is predicted at 7.4 [2.3, 13.6] min, so it would have a fair chance of hitting the cap.
+- The host choice does not know about the caps. With tight caps it keeps renting hosts it expects to exceed them, and each time-out restarts the boot from zero on the next offer.
+
+**My view:** a cap doesn't shorten waiting by itself. It turns a slow boot into a restart. What shortens the wait is choosing faster hosts. If Julian wants 9 + 6, the host choice should know the caps: each posterior draw in which an offer's setup exceeds the cap counts as a failure that wastes the cap's minutes. Then hosts likely to time out score badly, and the policy prefers fast ones. Without that, 9 + 6 mostly adds re-rents. Alternative without new code: 12 + 6 with the 2× margin.
+
+## `explore` at the away rate
+
+Julian's point: `explore` is for when he is away, so it should use the away rate. My answer: *when* to run it and *what it scores* are separate. Running it when away is right, because then a slow host costs little. But the rate in its score decides what it explores:
+- Thompson sampling tries a host when, in some posterior draw, it comes out cheapest. At $0.5/h, 10 min of extra setup costs $0.08, while price differences over a 2-h session are $0.2-0.6. So setup-time uncertainty almost never changes the ranking, and `explore` keeps to the cheapest hosts. It explores less, not more.
+- [concluded: simulation 26-11-18, entry *implementation, simulation findings, backfilled history*] With `explore` at the away rate, `hedge` afterwards chose as badly as at random in one of three markets (0.98 of random's excess cost). At the watching rate, `hedge` found the best host in all three. `tests/vast/test_simulation.py::test_hedge_uses_what_explore_learned` guards this.
+- Proposal: keep the watching rate, and change `cli.py`'s help to say "run it when you are away: a slow host costs you little then".
+
+---
+
+C: (transcribed from chat) [answer to my question on the boot caps, options "9+6, cap-aware", "9+6, margin 3× only", "12+6, margin 2×"] 12+6, margin 2×
+
+C: (transcribed from chat) [answer to my question whether `explore` should score at the away rate] Keep watching rate (Recommended)
+
+26-11-21, Claude Opus 5.5 — *12 + 6 caps implemented, explore help text*; context: Julian's two answers above, my entry *9 + 6 caps: what they break, and explore's rate*.
+
+- **Caps** [decided: Julian's answer above]: `max_pull_minutes: 12`, `max_build_minutes: 6`, abort margin unchanged at 2×. One attempt can take at most 18 min. The reasons are in the comment in `configs/policy.yaml`.
+- **Risk to watch:** the only legacy-builder build we have seen took 5.4 min, so such a host on a slower day can exceed 6 min and be destroyed after a finished pull. If `ic-vast stats` or a log shows "build step not done", the build cap is the first thing to raise.
+- **`explore`** [decided: Julian's answer above]: it still scores at the watching rate. The help texts (`cli.py` usage line and `--mode` help, `policy.py` mode list) now say to run it when away; `policy.mode_settings`' docstring says the watching rate is intentional and why.
+- **Checks** [verified: `make check` 26-11-21: format, lint, basedpyright 0/0, 38 passed]:
+  - The cap tests now use 12 + 6: a pull ending at 11 min followed by a 5-min build reaches `running`; a hanging build is stopped at 17-17.5 min; a hanging pull at 12-12.5 min; with 13 min of the total left the build gets 2 min.
+  - The recorded-boot tests run with the real config: good hosts kept (314882 reaches `running` at 12.4 min: pull 7.0, build 5.4), slow host 169171 stopped at 3.8 min [verified: replay 26-11-21].
+  - Mutation check: counting the build cap from renting makes 3 tests fail [verified 26-11-21].
+- **Still open:** one short live rental (abort, caps, quiet output, and the watchdog restart from the launcher topic), then the commit. The mode names (`exploit`, `balance`, `explore`, `hedge`) still await Julian's explicit ratification; his answer kept `explore`'s scoring but did not rule on the names.
+
+---
+
+C: (transcribed from chat) [answers to my three items: 1. approve the mode names, 2. one short live rental, 3. commit] 1. Approve
+2. please do
+3. can you do the commits then?
+
+26-11-21, Claude Opus 5.5 — *mode names ratified; live check and commit started*: the mode names `exploit`, `balance`, `explore`, `hedge` are ratified [decided: Julian's answer 1 above]. Next: one rental with `ic-vast rent --timer 40m` (default mode `balance`), a forced `vastai reboot instance` to test the watchdog restart, `ic-vast destroy`, then the commit.
+
+---
+
+26-11-21, Claude Opus 5.5 — *live test 4: false abort from unseen small layers, ssh mode fault again, stopped by Julian*; context: the run log (session scratchpad, not in the repo), `rentals.jsonl`, `ic-vast stats`. `ic-vast rent --timer 40m`, mode `balance`, code with the 12 + 6 caps. No instance left running [verified: `vastai show instances-v1` 26-11-21, 0 instances].
+
+- **Attempt 1, host 626968 (RTX A6000, US): aborted at 4.1 min by mistake.** vast.ai's status shows only the latest pull line(s), so small layers that finish between two polls are never seen done. After "layer 17 (1.7 kB) Pull complete" the tracker took layer 18 (804 B) for the one in progress, so the upper bound stuck at 1.87 GB while the 4.15 GB layer 19 (downloaded at 130 s) was unpacking. The best case looked like 16.6 more min against 2 × 7.9 min of pull budget left, and the abort fired. [verified: the recorded status messages]
+  - **Fixed (uncommitted, not yet live-checked):** `pull.PullTracker.bytes_upper` now runs through the next layer of at least `VISIBLE_LAYER_BYTES` = 100 MB (a smaller one unpacks within one 5-s poll even at 20 MB/s; the largest missed layer was 35 MB). Replay [verified 26-11-21]: 626968 no longer aborted; slow host 169171 still stopped at 3.8 min; good hosts kept; 100 MB and 1 GB thresholds gave the same verdicts.
+  - Tests: this boot added verbatim as `tests/vast/data/boots_26-11-21.jsonl` (must not be aborted), plus a unit test of the skip rule; `make check` passes, 40 tests. Mutation (threshold 0) fails 3 tests [verified 26-11-21].
+  - The censored speed the model reads for 626968 comes from replaying its polls, so the fix also corrects its record without editing it.
+- **Attempt 2, host 679583 (RTX A6000, UK): `running` after 5.4 min** (pull about 2.5 min, BuildKit build about 3 min, inside the 12 + 6 caps). Then ssh refused the key for 300 s: sshd's "bad ownership or modes" on `authorized_keys`, counted as a host failure and destroyed.
+  - That is the second host here with this fault (314882 on 26-11-18), out of 4 rentals that reached `running`; the SPD repo saw it once with a different image (26-10-31, host 161249). [assumed] Possibly not a host fault but something in how the container starts. Candidate fix, not done: have the instance's start command reset ownership and modes of `/root`, `/root/.ssh` and `authorized_keys` before ssh is tried. If it works, these should stop counting against the hosts.
+  - A pull message named a layer not in Docker Hub's manifest (`16b73de6e8ad`). Not investigated.
+- **Attempt 3, host 710540 (L40S, US):** stopped by Julian's request while booting (SIGINT; recorded as interrupted, destroyed by the launcher).
+- **Not verified:** the watchdog restart after a container restart (no machine got to ssh). The commit has not been made.
+
+---
+
+C: (transcribed from chat) Can you implement the possibsle fix for the ssh refusal and try to check it (by renting machines until one refuses ssh, maybe for this you should try out smaller images)
+Also, can you investigate why there was an additional layer (either before or after the other task)
+
+26-11-21, Claude Opus 5.5 — *the extra layer 16b73de6e8ad is the image's provenance attestation*; context: this topic's SUMMARY, my entry *live test 4: ...*, the recorded polls of instance 61822310 (host 679583) in `rentals.jsonl`, Docker Hub's manifests for `vastai/vllm:v0.34.0-cuda-13.0` (read 26-11-21).
+
+- **What it is** [verified: Docker Hub, 26-11-21]. The tag is a manifest list with four entries: the amd64 image, the arm64 image, and one *attestation manifest* for each (`vnd.docker.reference.type: attestation-manifest`, platform `unknown/unknown`). The amd64 image's attestation manifest has exactly one layer, `sha256:16b73de6e8ad...`, 9,225 bytes, media type `application/vnd.in-toto+json`, predicate `https://slsa.dev/provenance/v1`. So it is the SLSA build-provenance record BuildKit attached when vast.ai built the image, not part of the image's file system. `image.fetch_layers` takes only the amd64 image manifest, so it is not in our layer list.
+- **When it appeared:** during the download phase, before the unpacking was done. Polls of instance 61822310, seconds after renting: 69.5 `5b7b6b349d38: Download complete`, **75.7 `16b73de6e8ad: Download complete`**, 82.0 `b1dceeafcd5e: Pull complete`. So the host's Docker fetched it alongside the image layers.
+- **Why only on this host** [assumed]: newer Docker installs that use the containerd image store fetch the attestation manifests together with the image; the classic store skips them. That would make it a property of the host's Docker setup. But a 9 KB blob is one status line that a 5-s poll can easily miss, so "seen once in 7 pulls" does not show the other hosts skipped it.
+- **Effect: none.** `pull.PullTracker` ignores ids not in the manifest (it lists them in `PullStats.unknown_layer_ids`), and 9 KB changes no byte count. Nothing to fix. If more of these show up, `fetch_layers` could also read the attestation manifests' layer ids and skip them silently instead of listing them as unknown; I don't think that is worth doing now.
+
+---
+
+26-11-21, Claude Opus 5.5 — *ssh mode fix: onstart loop, caught on host 314882*; context: this topic's SUMMARY, my entry *live test 4: ...*, `remote.py`, `market.py`, `cli.py`, `records.py`; two trial rentals (outputs in the gitignored `scratch/ssh_modes_trial/`, script `scratch/ssh_modes_trial_26-11-21.py`). No instance left running [verified: `vastai show instances-v1` 26-11-21, 0 instances].
+
+**The fix (uncommitted).** New module `src/ic_eval/vast/sshmodes.py`. Every rental now gets `--onstart-cmd` with a small POSIX sh loop. It runs in the background from container start for 15 min, every 2 s. It checks `/`, `/root`, `/root/.ssh` and `authorized_keys`, the paths sshd's StrictModes checks. A path owned by a uid other than 0, or writable by group or others, gets `chown 0` and `chmod go-w`, nothing recursive. Each fix is logged once, with the state before, to `/root/ssh_modes.log` and to PID 1's stdout, which `vastai logs` shows even when ssh never works.
+- After ssh works or fails, `cli._run_attempt` reads those lines (plus any sshd "bad ownership or modes" lines) from `vastai logs` and prints a one-line summary. It stores them in the new record field `Attempt.ssh_modes`. `SCHEMA_VERSION` is now 2; version-1 records read it as None.
+- `remote.wait_until_ssh_ready` now quotes sshd's own line in the failure detail, not just the marker.
+- A loop rather than a one-off chmod, because when the modes go bad was unknown (vast.ai's daemon can rewrite the key file on `vastai attach ssh`). sshd checks modes at every login attempt, so fixing them at any time before the next probe is enough.
+- vast.ai stores the onstart command on its servers; it carries no secret.
+- Tests: `tests/vast/test_sshmodes.py` runs the real script with `sh` on a temporary tree (as the current user's uid). It checks that a group-writable home and a world-writable key file are fixed once each, that clean modes are left alone, that missing paths are skipped, and that the summary reports a missing start line. Mutation `-perm /022` → `/002` fails a test [verified 26-11-21]. `make check` passes, 44 tests.
+
+**Trial** (small image `vastai/base-image:stock-ubuntu24.04-py312-2026-10-23`, 1.31 GB instead of 10.9 GB; the 48gb config's market; host 314882 tried first when on offer; not recorded in `rentals.jsonl`, because a different image would distort the pull speeds and build times the model learns). Cost: about $0.03 (93 s at $0.489/h, 126 s at $0.541/h).
+
+| # | Host | Running after | ssh ready after | Fix report |
+|---|------|---------------|-----------------|------------|
+| 1 | 250721 (RTX A6000, RO) | 43 s | 55 s | ran, nothing to fix (`/` 755, `/root` 700, `.ssh` 700, keys 600, all root) |
+| 2 | **314882** (RTX A6000, US) | 112 s | 116 s | **`fixed /root/.ssh/authorized_keys: was 115:999 644, now 0:999 644`**, in the same second the loop started |
+
+- [verified: trial rental 2, 26-11-21, one rental] **On host 314882 the cause is the key file's owner: uid 115, gid 999.** No such user exists in the container; it looks like the host's vast.ai daemon account, which put the key in. sshd rejects a key file owned by anyone but root or the logging-in user ("bad ownership"). The modes (644) were fine. After the fix, `vastai logs` shows sshd accepting our key at the first attempt, and no "bad ownership or modes" line at all. On 26-11-18, without the fix, the same host refused the key for the full 300 s.
+- [verified: trial rental 1] **The fix doesn't break the watchdog's restart path.** After `vastai reboot instance`, `/root/onstart.sh` still held a line appended after creation, and that line ran once. So vast.ai does not rewrite onstart.sh from `--onstart-cmd` on a restart, and `remote.install_watchdog`'s appended line survives. The fix loop also started again.
+  - Not checked: a container restart that the host triggers by itself, which killed the watchdog on 26-11-18.
+- **How the key gets in:** vast.ai's start script (`/.launch`, read on rental 1) installs openssh on first boot. It runs onstart in the background, then starts sshd with its log on PID 1's stdout (`sshd -E /proc/1/fd/1`; that is why sshd's lines are in `vastai logs`). It never writes `authorized_keys` itself, so the key comes from outside the container, from vast.ai's daemon on the host.
+  - [assumed] On some hosts that daemon writes the file as its own uid. This makes it a per-host fault, which fits it recurring on 314882 and also hitting 679583.
+- Side observation: host 314882's container sits on Docker's containerd snapshotter (`/var/lib/docker/containerd/...` in the mounts); host 250721's uses classic overlay2. That fits the guess in my previous entry, that containerd-store hosts also pull the image's attestation, but 679583's storage was not looked at.
+- **Not live-checked:** the `ic-vast rent` path itself (report → record field → console line). The trial used the same `create_instance` and `sshmodes` functions, but its own loop. The next real `ic-vast rent` will show it.
+
+**Open, for Julian:**
+1. **Should the two past ssh failures still count against hosts 314882 and 679583?** They were real, but the fix now prevents them, so the model's failure penalty on these hosts is out of date.
+   - My suggestion: `model.observations_from_records` skips `ssh` failures whose detail contains "bad ownership or modes". That is a rule in the reader, not an edit of the history.
+   - The alternative is to leave them, and let the failure half-life (30 days) fade them.
+2. Whether to rent on a few more hosts: one caught case shows the mechanism, not how often it occurs. Every future `ic-vast rent` now records the fix's report, so the rate builds up for free.
+
+---
+
+C: (transcribed from chat) My decision is that we just delete those two host entries. Then could you commit all the changes?
+
+C: (transcribed from chat) [answer to my question whether to delete the two records or to have the model ignore their failures, after I pointed out that they also hold 2 of the 5 complete pull speeds, are uncommitted, and that deleting breaks the append-only rule] Delete both lines
+
+26-11-21, Claude Opus 5.5 — *the two ssh-failure records deleted*: at Julian's decision above [decided], the attempt records of instance 61316690 (host 314882, 26-11-18) and instance 61822310 (host 679583, 26-11-21) are deleted from `src/ic_eval/vast/data/rentals.jsonl`, 13 → 11 lines. Neither had an `end` record. This is a deliberate one-off exception to the file's append-only rule (stated in `records.py`), which otherwise stands. Reason: their failures came from the ssh ownership fault that the onstart fix now prevents.
+- Also lost with them: their pull speeds, 28 MB/s (314882) and 61 MB/s (679583). Both hosts are now unknown to the model.
+- The 314882 boot remains as test data in `tests/vast/data/boots_26-11-18.jsonl`.
+- A local copy of the two lines is in the gitignored `scratch/deleted_ssh_failure_records_26-11-21.jsonl`.
+- [verified 26-11-21] `ic-vast stats` no longer lists either host; `make check` passes, 44 tests.
+- Earlier entries that quote these hosts' speeds or failure rates describe the history as it was then. Next: the commit Julian asked for.

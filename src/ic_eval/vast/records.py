@@ -25,7 +25,8 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 from ic_eval.vast.common import RENTALS_PATH
 from ic_eval.vast.image import Layer
 
-SCHEMA_VERSION = 1
+# 2 (26-11-21): Attempt.ssh_modes added; version-1 records lack it and read as None.
+SCHEMA_VERSION = 2
 
 # `ready`: a usable machine. `aborted_slow`: given up on because the pull was predicted to take
 # too long (the speed it had is still an observation). `failed`: see FailureType.
@@ -111,13 +112,18 @@ class Attempt(_Record):
     selection: Selection
     polls: list[Poll]
     pull: PullStats
-    abort_prediction_min: float | None  # predicted remaining minutes that triggered the abort
+    abort_prediction_min: float | None  # best-case remaining minutes at the abort
     outcome: Outcome
     failure_type: FailureType | None
     failure_detail: str | None
     ssh_ready_at: float | None
     ready_at: float | None  # watchdog armed and repo synced, before the probes
     probes: dict[str, Any] | None
+    # The report of the onstart ssh-mode fix (sshmodes.py) plus sshd's bad-modes lines, from
+    # `vastai logs` once ssh worked or failed. A "fixed ..." line means sshd would have refused
+    # our key without the fix. None: not collected (schema 1, or the boot never reached ssh).
+    # The one field with a default, because version-1 records predate it.
+    ssh_modes: list[str] | None = None
 
 
 class End(_Record):

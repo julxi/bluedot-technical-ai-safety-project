@@ -3,7 +3,7 @@
     ic-vast offers                        # score the market, rent nothing
     ic-vast rent                          # rent + prepare (default config 48gb, mode balance)
     ic-vast rent --mode hedge             # when watching: avoid failures and long waits
-    ic-vast rent --mode explore           # deliberately try hosts the model knows little about
+    ic-vast rent --mode explore           # try little-known hosts; run it when you're away
     ic-vast rent --mode exploit           # lowest expected cost, no exploration
     ic-vast rent --config h200 --hours 4  # src/ic_eval/vast/configs/h200.yaml, 4 h session
     ic-vast rent --offer_id 123           # this offer, no choice, no re-rent
@@ -28,6 +28,7 @@ from typing import Any, NamedTuple
 import fire
 import numpy as np
 
+from ic_eval.vast import sshmodes
 from ic_eval.vast.boot import BootResult, wait_for_boot
 from ic_eval.vast.common import CURRENT_INSTANCE_PATH, HostFailure, log, section, values
 from ic_eval.vast.config import (
@@ -64,6 +65,7 @@ from ic_eval.vast.policy import (
     select,
 )
 from ic_eval.vast.probes import run_probes, summary_lines
+from ic_eval.vast.pull import replay
 from ic_eval.vast.records import (
     SCHEMA_VERSION,
     Attempt,
@@ -184,7 +186,8 @@ def rent(
         config: Machine config: a short name ('h200' -> configs/h200.yaml) or a YAML path.
         mode: How to choose among offers. exploit: lowest expected cost. balance (default):
             mostly exploit, now and then try a host the model knows little about. explore: try
-            uncertain hosts deliberately. hedge: avoid failures and long waits (for watching).
+            uncertain hosts deliberately; run it when away, as a slow host costs little then.
+            hedge: avoid failures and long waits (for watching).
         hours: Planned session length, weighs price against setup time; default from config.
         offer_id: Rent exactly this offer: no choice, no re-rent (recorded as mode 'manual').
         timer: Self-destruct timer, e.g. '2h', '90m' or 'off'; default from the config.
@@ -258,7 +261,7 @@ def rent(
             f"{offer['host_id']} ({offer['gpu_name']}, ${offer['dph_total']:.3f}/h, "
             f"{offer['geolocation']})"
         )
-        instance_id = create_instance(int(offer["id"]), machine, label)
+        instance_id = create_instance(int(offer["id"]), machine, label, sshmodes.onstart_script())
         if instance_id is None:
             log(f"Offer {offer['id']} is not available any more (rented or withdrawn); rechoosing")
             taken_offers.add(int(offer["id"]))
@@ -267,11 +270,11 @@ def rent(
             )
             continue
         created_at = time.time()
-        budget_s = min(
-            policy.max_boot_minutes * 60,
-            policy.max_total_boot_minutes * 60 - boot_spent_s,
+        total_left_s = policy.max_total_boot_minutes * 60 - boot_spent_s
+        log(
+            f"Created instance {instance_id}; boot caps: pull {policy.max_pull_minutes:g} min, "
+            f"then build {policy.max_build_minutes:g} min, {total_left_s / 60:.1f} min in total"
         )
-        log(f"Created instance {instance_id}; boot budget {budget_s / 60:.1f} min")
         done = _run_attempt(
             instance_id=instance_id,
             created_at=created_at,
@@ -283,7 +286,7 @@ def rent(
             machine=machine,
             policy=policy,
             layers=layers,
-            budget_s=budget_s,
+            total_left_s=total_left_s,
             identity_file=identity_file,
             git_state=git_state,
             timer_s=timer_s,
@@ -379,16 +382,18 @@ def stats() -> None:
     attempts = [r for r in records if isinstance(r, Attempt)]
     now = time.time()
     rng = np.random.default_rng()
-    obs = observations_from_records(records, now, policy.cache_window_days)
+    obs = observations_from_records(
+        records, now, policy.cache_window_days, policy.abort_warmup_seconds
+    )
     posterior = _fit(obs, policy, "balance", rng)
     section(f"History: {len(attempts)} attempts, {len(records) - len(attempts)} session ends")
     for a in attempts:
         setup = f"{(a.ready_at - a.created_at) / 60:.1f} min" if a.ready_at else "-"
-        speed = f"{a.pull.speed_mb_s:.0f} MB/s" if a.pull.speed_mb_s else "-"
+        speed = _replayed_speed(a)
         print(
             f"  {datetime.fromtimestamp(a.created_at):%y-%m-%d %H:%M}  host {a.offer['host_id']:>7}"
             f"  {a.offer['gpu_name']:<13} {a.selection.mode:<8} {a.outcome:<13}"
-            f" {a.failure_type or '':<12} pull {speed:>9}  setup {setup}"
+            f" {a.failure_type or '':<12} pull {speed:>11}  setup {setup}"
         )
     section("Shared parameters (posterior mean [10%, 90%])")
     values(
@@ -460,7 +465,7 @@ def _run_attempt(
     machine: MachineConfig,
     policy: PolicyConfig,
     layers: list[Layer],
-    budget_s: float,
+    total_left_s: float,
     identity_file: Path,
     git_state: LocalGitState,
     timer_s: int | None,
@@ -476,6 +481,7 @@ def _run_attempt(
     """
     boot: BootResult | None = None
     ssh_ready_at: float | None = None
+    ssh_modes: list[str] | None = None
     armed = False
 
     def record(outcome, failure_type, detail, ready_at=None, probes=None) -> None:
@@ -501,11 +507,17 @@ def _run_attempt(
                 ssh_ready_at=ssh_ready_at,
                 ready_at=ready_at,
                 probes=probes,
+                ssh_modes=ssh_modes,
             )
         )
 
+    def collect_ssh_modes() -> None:
+        nonlocal ssh_modes
+        ssh_modes = sshmodes.fetch_report(instance_id)
+        log(f"ssh mode fix: {sshmodes.summary(ssh_modes)}")
+
     try:
-        boot = wait_for_boot(instance_id, layers, scored.rule, policy, budget_s)
+        boot = wait_for_boot(instance_id, layers, scored.rule, policy, total_left_s)
         if boot.outcome != "running":
             log(f"Giving up on host {offer['host_id']}: {boot.outcome} - {boot.detail}")
             record(boot.outcome, boot.failure_type, boot.detail)
@@ -515,7 +527,10 @@ def _run_attempt(
         attach_ssh_key(instance_id, identity_file)
         host, port = ssh_host_port(instance_id)
         write_ssh_config(host, port, instance_id, identity_file)
-        wait_until_ssh_ready(instance_id, identity_file)
+        try:
+            wait_until_ssh_ready(instance_id, identity_file)
+        finally:
+            collect_ssh_modes()
         ssh_ready_at = time.time()
         install_watchdog(instance_id, offer)
         armed = True
@@ -601,7 +616,9 @@ def _score(
 ) -> Scored:
     now = time.time()
     records = load_records()
-    obs = observations_from_records(records, now, policy.cache_window_days)
+    obs = observations_from_records(
+        records, now, policy.cache_window_days, policy.abort_warmup_seconds
+    )
     posterior = _fit(obs, policy, mode, rng)
     session_hours = hours if hours is not None else machine.hours
     lam, aversion = mode_settings(mode, policy)
@@ -634,8 +651,18 @@ def _score(
         candidates=candidate_scores(evaluation, probs, policy),
         propensity=float(probs[chosen]),
     )
-    rule = abort_rule(evaluation, posterior, chosen, next_best, policy)
+    rule = abort_rule(posterior, next_best, policy)
     return Scored(evaluation, posterior, chosen, probs, selection, rule)
+
+
+def _replayed_speed(a: Attempt) -> str:
+    """The pull speed as the model sees it (polls replayed): exact, or a range if unfinished."""
+    bounds = replay(a.image_layers, a.polls).speed_bounds(a.polls[-1].t) if a.polls else None
+    if bounds is None:
+        return "cached" if a.polls and a.pull.cached else "-"
+    if bounds.exact:
+        return f"{bounds.low_mb_s:.0f} MB/s"
+    return f"{bounds.low_mb_s:.0f}-{bounds.high_mb_s:.0f} MB/s"
 
 
 def _chosen_score(scored: Scored):
@@ -664,11 +691,13 @@ def _print_candidates(scored: Scored, limit: int) -> None:
             f"{setup:>16} {c.failure_prob:5.2f} {c.cost_mean:7.2f} "
             f"{c.effective_observations:5.1f} {c.propensity:8.3f}  {offer['geolocation']}"
         )
+    against = f"its pull alone needs more than {scored.rule.budget_margin:g} x the pull budget left"
     if scored.rule.threshold_min is not None:
-        print(
-            f"  abort the pull if more than {scored.rule.threshold_min:.1f} min are predicted "
-            f"to remain (next-best offer: {sel.next_best_setup_min:.1f} min)"
+        against = (
+            f"it needs more than {scored.rule.threshold_min:.1f} min to ready (next-best offer: "
+            f"{sel.next_best_setup_min:.1f} min), or {against}"
         )
+    print(f"  abort the pull if, even at its best speed so far, {against}")
 
 
 def _interval(draws: np.ndarray, unit: str) -> str:

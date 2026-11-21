@@ -11,6 +11,7 @@ import os
 import re
 import shlex
 import subprocess
+import sys
 import time
 from datetime import datetime
 from pathlib import Path
@@ -18,15 +19,21 @@ from typing import Any, NamedTuple
 
 from dotenv import dotenv_values
 
+from ic_eval.vast import sshmodes
 from ic_eval.vast.boot import DEAD_STATUSES
 from ic_eval.vast.common import REPO_ROOT, HostFailure, log
 from ic_eval.vast.market import show_instance, vastai
+from ic_eval.vast.sshmodes import BAD_KEY_MODES_MARKER
 
 SSH_HOST_ALIAS = "bluedot-vast"
 SSH_CONFIG_PATH = Path.home() / ".ssh/config.d" / f"{SSH_HOST_ALIAS}.conf"
 DEFAULT_SSH_IDENTITY_FILE = Path.home() / ".ssh/id_rsa"
 # Every ssh call is non-interactive: a password or passphrase prompt nobody answers would hang it.
-SSH_OPTS = ["-o", "BatchMode=yes"]
+# LogLevel=ERROR hides vast.ai's pre-login banner ("Welcome to vast.ai ...") and the "Permanently
+# added ... to the list of known hosts" warning that every call printed. Errors such as
+# "Permission denied (publickey)", which wait_until_ssh_ready looks for, still show [verified:
+# OpenSSH 9.6, 26-11-18].
+SSH_OPTS = ["-o", "BatchMode=yes", "-o", "LogLevel=ERROR"]
 
 REMOTE_REPO_DIR = "/root/bluedot"
 REMOTE_SCRIPT_LOG_DIR = f"{REMOTE_REPO_DIR}/logs/remote"
@@ -58,9 +65,6 @@ def _watchdog_start_command(python: str) -> str:
 SSH_READY_TIMEOUT_S = 300
 SSH_POLL_INTERVAL_S = 5
 WATCHDOG_START_TIMEOUT_S = 15
-# sshd's message, in `vastai logs`, when the host broke authorized_keys' file modes: a host fault
-# that looks exactly like a rejected key from our side (SPD launcher, host 161249 on 26-10-31).
-BAD_KEY_MODES_MARKER = "bad ownership or modes"
 
 # Runs on the instance under the image's system python3, so it uses only the standard library and
 # avoids syntax newer than Python 3.8. Written there by `_install_watchdog`.
@@ -362,6 +366,7 @@ def write_ssh_config(host: str, port: int, instance_id: int, identity_file: Path
         f"    Port {port}\n"
         f"    StrictHostKeyChecking no\n"
         f"    UserKnownHostsFile /dev/null\n"
+        f"    LogLevel ERROR\n"
     )
     resolved = subprocess.check_output(["ssh", "-G", SSH_HOST_ALIAS], text=True).splitlines()
     assert f"hostname {host}" in resolved and f"port {port}" in resolved, (
@@ -412,16 +417,12 @@ def wait_until_ssh_ready(instance_id: int, identity_file: Path) -> None:
         )
     cause = ""
     if "Permission denied" in last_error:
-        # check=False: diagnostics only; the HostFailure below is raised either way.
-        logs = subprocess.run(
-            ["vastai", "logs", str(instance_id)],
-            check=False,
-            capture_output=True,
-            text=True,
-            stdin=subprocess.DEVNULL,
-        )
-        if BAD_KEY_MODES_MARKER in logs.stdout + logs.stderr:
-            cause = f"; sshd: '{BAD_KEY_MODES_MARKER}' of authorized_keys (host fault)"
+        # sshd's own words, e.g. which path it found bad; the caller records the full report.
+        refused = [
+            line for line in sshmodes.fetch_report(instance_id) if BAD_KEY_MODES_MARKER in line
+        ]
+        if refused:
+            cause = f"; sshd: {refused[-1]!r} ({len(refused)} such lines)"
     # Counted against the host although a broken local key would fail the same way: a key that
     # works on other hosts is far more common, and repeated ssh failures everywhere would show it.
     raise HostFailure(
@@ -551,7 +552,9 @@ def rsync_args() -> list[str]:
         "--no-owner",
         "--no-group",
         "--delete",
-        "--info=progress2",
+        # A live progress line on a terminal; in a log file it is hundreds of carriage-return
+        # updates, so there only the end-of-run totals.
+        "--info=progress2" if sys.stdout.isatty() else "--info=stats1",
         "--filter=:- .gitignore",
         "--exclude=/.git/",
         "--exclude=.venv",

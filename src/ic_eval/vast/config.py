@@ -69,10 +69,18 @@ class PolicyConfig(YamlModel):
     balance_tempering: float = Field(description="`balance` shrinks the posterior spread to this")
     max_attempts: int = Field(description="Rentals per `ic-vast rent` before giving up")
     max_total_boot_minutes: float = Field(description="Boot time summed over all attempts")
-    max_boot_minutes: float = Field(description="Hard cap for one attempt's boot")
+    max_pull_minutes: float = Field(
+        description="Hard cap from renting until the image pull ends (download and unpack)"
+    )
+    max_build_minutes: float = Field(
+        description="Hard cap from the pull's end until `running` (vast.ai's build step)"
+    )
     stall_minutes: float = Field(description="Abort when the boot status has not changed this long")
     abort_warmup_seconds: float = Field(
         description="Pull time before the speed-based abort may act"
+    )
+    abort_budget_margin: float = Field(
+        description="Abort when the best-case pull time left exceeds this x the pull budget left"
     )
     cache_window_days: float = Field(
         description="A host that ran the image this recently may have it"
