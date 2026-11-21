@@ -373,3 +373,30 @@ C: (transcribed from chat) I think I'd like the configs to be more technical nam
 Renamed `src/ic_eval/vast_configs/7b.yaml` → `48gb.yaml` (still the default) and `32b.yaml` → `h200.yaml`, following the SPD repo's hardware names (`h100`, `a100`). The model sizes stay in each file's header comment as the reason for the card class. Updated `DEFAULT_CONFIG`, the docstrings and the YAML comments. [verified: `ic-vast offers` with both new names; `--config 7b` now fails, listing `48gb, h200`.]
 
 Also answered in chat: `openai` stays in `dependencies`. inspect-ai doesn't depend on it, but Inspect's vLLM provider and its `openai-api/...` provider import it [verified: `uv.lock`; inspect_ai `model/_providers/vllm.py` line 10].
+
+---
+
+C: (transcribed from chat) There is no `ic-vast --sync` command?
+
+(After I confirmed there is none and offered to add one:)
+
+C: (transcribed from chat) Yes please
+
+---
+
+26-11-21, Claude Opus 5.5 — *ic-vast sync added (re-upload to a running instance)*; context: `cli.py`, `remote.py`, `docs/CODING.md`, this topic's SUMMARY, the local_olmo_inspect LOG entry that hit the missing re-sync (a new `scripts/serve_vllm.sh` was not on the rented instance).
+
+**Why:** the working tree was synced only once, inside `rent`. The run/detached/sync modes of the SPD launcher had been dropped at the start (Julian's answers above). A script written after renting therefore had to be copied by hand.
+
+**What:** `uv run ic-vast sync [--allow_delete]` (`cli.py`, function `sync`). It reuses `sync_repo` from `rent`: the instance's clone is put on our branch and HEAD commit (fetched from GitHub, so HEAD must be pushed), then rsync makes the files match our working tree, uncommitted changes included. `build_checkout_script` was already written to be safe on a re-sync (`update-ref` + `symbolic-ref` + `reset --mixed`, which never touch the working tree).
+
+**Added guard (my addition, not asked for):** the rsync runs with `--delete`. At rent time that only touches the fresh clone. On a used instance it would silently remove any file under `/root/bluedot` that we don't have locally and that the instance's `.gitignore` doesn't cover, e.g. outputs written to a tracked path. So `sync` first does a dry run of the same rsync (`--dry-run --itemize-changes`, `remote.py`: `files_a_sync_would_delete`, `parse_rsync_deletions`) and stops with the list of paths unless `--allow_delete` is passed. Not guarded: edits made on the instance to files we also have are overwritten (rsync can't tell them from our own edits). Running processes are not affected: a sync changes files only.
+
+**Found while writing the test** [verified: local rsync 3.2.7, 26-11-21]: `--delete` respects the *receiving* side's `.gitignore` files. A destination without `.gitignore` had its `*.log` file listed for deletion even though the source ignored it. On the instance the clone carries the committed `.gitignore`, so it protects `logs/` and the like; the test gives both sides a `.gitignore`.
+
+**Checks:**
+- [verified: `make check` 26-11-21] format, lint, basedpyright 0/0, 46 tests passed (2 new in `tests/vast/test_resync.py`; they run the production rsync flags between two local temp directories).
+- [verified: live, instance 61848825, 26-11-21, one run each]
+  - `ic-vast sync` with nothing to delete: fetch + rsync ran (21 KB sent), `scripts/serve_vllm.sh` arrived, and the instance's `git status --short` matched the laptop's exactly (HEAD `a9636c0`).
+  - With a probe file `zz probe.txt` (a space in the name) placed on the instance: the sync stopped, printed `/root/bluedot/zz probe.txt` as the one path it would delete, and exited 1 without syncing. The probe file was removed by hand afterwards.
+  - `--allow_delete` itself was not run live; it only skips the assert.

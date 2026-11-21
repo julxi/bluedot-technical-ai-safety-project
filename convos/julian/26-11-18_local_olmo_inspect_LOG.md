@@ -318,3 +318,81 @@ Answer (26-11-18, Claude Opus 5.5): Context: this LOG, our chat during steps 1-5
 - **For the 7B, an RTX A6000 (48 GB) on Vast** is the cheapest card with headroom: $0.35-0.48/h in the 26-11-18 snapshot, see the RLVR LOG. Vast offers ready-made vLLM machine images, so nothing needs installing by hand. [assumed: not checked which image or version]
 
 Open question for you: should I write a step-by-step guide for the GPU move in the same style as the laptop one? It would cover renting, the SSH tunnel, `vllm serve` with checkpoint branches, pointing Inspect at it, and stopping the machine.
+
+---
+
+C: (transcribed from chat) I'm renting a machine right now and then I'd like to use vllm serve. Maybe I should write a script for that. What should I write?
+
+---
+
+26-11-21, Claude Opus 5.5 — *what a vllm serve script should contain*; I have read README, this SUMMARY, the launcher and host-selection SUMMARYs, `remote.py`'s `--script` runner, `configs/48gb.yaml`, `tasks/hello.py` and `docs/CODING.md` §Rented vast.ai GPUs. Not run anything.
+
+**Yes, a script. Keep it small: it only starts the server.** Health check, tunnel and Inspect stay on the laptop. Then it works in both ways the launcher offers: `ic-vast rent --script scripts/serve_vllm.sh` (detached, log in `/root/bluedot/logs/remote/`), or by hand over ssh. [concluded: `--script` already runs a repo `.sh` file in a login shell with `setsid nohup`, so the script itself needs no detaching]
+
+Suggested `scripts/serve_vllm.sh` (a draft for Julian to write or adapt, not tested):
+
+```bash
+#!/usr/bin/env bash
+# Start a vLLM server for Olmo 3 on a rented GPU. Inspect on the laptop reaches it through an
+# ssh tunnel: ssh -N -L 8000:localhost:8000 bluedot-vast
+# Usage (on the instance, from /root/bluedot): bash scripts/serve_vllm.sh [model] [revision]
+set -euo pipefail
+
+MODEL="${1:-allenai/Olmo-3-7B-Think}"
+REVISION="${2:-main}"
+
+# Branch names move; the commit hash records which weights were served.
+SHA=$(python3 -c "import sys; from huggingface_hub import HfApi; print(HfApi().model_info(sys.argv[1], revision=sys.argv[2]).sha)" "$MODEL" "$REVISION")
+echo "[serve_vllm] $(date -Is) model=$MODEL revision=$REVISION sha=$SHA vllm=$(vllm --version)"
+nvidia-smi --query-gpu=name,memory.total,power.limit --format=csv
+
+exec vllm serve "$MODEL" \
+  --revision "$SHA" \
+  --served-model-name olmo \
+  --host 127.0.0.1 --port 8000 \
+  --dtype bfloat16 \
+  --max-model-len 32768 \
+  --gpu-memory-utilization 0.90 \
+  --seed 0
+```
+
+Why each piece:
+- **`set -euo pipefail`**: a failed hash lookup stops the script instead of serving something unrecorded (fail loudly).
+- **Serving by commit hash, logged**: the RLVR checkpoints are branches; a branch can be moved, a hash can't. The log line then says exactly which weights produced a run.
+- **`--host 127.0.0.1`**: reachable only through the ssh tunnel, so no API key and nothing open to the internet.
+- **`--served-model-name olmo`**: Inspect's model string stays the same across checkpoints; the checkpoint is recorded in the server log (and should go into Inspect's run metadata later).
+- **`--max-model-len` set explicitly**: otherwise vLLM uses the model's full context, and the attention-cache budget it plans for changes with it. 32768 is a placeholder: check `max_position_embeddings` in the model's `config.json` and the longest response we want. [assumed: placeholder value]
+- **`exec`**: vLLM becomes the script's process, so `pkill -f "[v]llm serve"` stops it cleanly (bracket pattern per `docs/CODING.md`).
+- **No `--reasoning-parser olmo3`, on purpose for now** [concluded]: `tasks/hello.py` splits at `</think>` itself and raises if the text has no `</think>` but stopped normally. With the parser, the thinking would move into a separate field, and that check would fire. Leaving it off gives the same raw text as llama.cpp did, so local and GPU results stay comparable. Switching to the parser is a separate decision (it changes the scorer).
+- **No Hugging Face token** [decided: B5 in the launcher LOG]; Olmo is public.
+
+On the laptop, after the script runs:
+1. Tunnel: `ssh -N -L 8000:localhost:8000 bluedot-vast`
+2. Wait until it's up (the first start downloads 14.6 GB and compiles; minutes): `curl -s localhost:8000/health` until it answers, then `curl -s localhost:8000/v1/models`.
+3. Inspect, same task, other model string:
+   `VLLM_BASE_URL=http://localhost:8000/v1 VLLM_API_KEY=none inspect eval tasks/hello.py --model openai-api/vllm/olmo --max-tokens 2000 --temperature 0.6 --top-p 0.95`
+   (`--max-connections` can now be raised; vLLM batches.) [assumed: Inspect's openai-api provider reads `<SERVICE>_BASE_URL`/`<SERVICE>_API_KEY` as it did for `LLAMACPP_*`; not tried with `vllm` as the service name]
+4. End: `uv run ic-vast destroy`.
+
+**For the rental running now:** a new script is not on the instance, because the sync happened at rent time and there is no re-sync mode. Either run the `vllm serve` command by hand over ssh this time (detached per `docs/CODING.md`: `ssh -n -f bluedot-vast 'setsid nohup bash -lc "…" > /root/vllm.log 2>&1 < /dev/null &'`), or copy the file over: `ssh bluedot-vast 'cat > /root/bluedot/scripts/serve_vllm.sh' < scripts/serve_vllm.sh` (after `mkdir -p` there).
+
+Later, not now: a checkpoint switch without renting again (B4 in the launcher LOG) is just stop-then-rerun with another revision; each switch downloads 14.6 GB.
+
+---
+
+26-11-21, Claude Opus 5.5 — *first vllm serve start on the A6000: timings and log facts*; from the start-up log Julian pasted in chat (spliced from several tmux screens). Julian runs and edits the script himself; I give commands and debug help.
+
+- **Script fix, by Julian:** the login shell's `python3` (`/opt/sys-venv/shim/python3`) has no `huggingface_hub`; vLLM runs from `/venv/main` (shebang of `/usr/local/bin/vllm`), which has it (2.4.0) [verified: ssh check 26-11-21]. I suggested `source /venv/main/bin/activate` in the script.
+- [verified: start-up log 26-11-21, one start, instance 61848825] RTX A6000, 49140 MiB, power limit 300 W. vLLM 0.34.0. `main` resolved to `d97e442d7cc678210054dbcc9b440894d62c89a4`.
+- **Timeline:** script start 20:11:35, weights download 73.6 s (13.59 GiB, so about 198 MB/s), loading weights 3.3 s, `torch.compile` and warm-up 14.8 s, engine init 35.0 s in all, server ready 20:14:15. **About 2 min 40 s from script start to ready.** The "Download complete 9.73MB" bars are the 12 small tokenizer/config files, not the weights; the weights progress bar was overwritten in tmux, only the summary line `Time spent downloading weights` remains.
+- **Attention cache:** 28.16 GiB, 128,957 tokens; at `--max-model-len 32768` that is 3.94 full-length requests at once. Real responses are shorter, so more run in parallel. Leaving `--gpu-memory-utilization` unset would give about 31.9 GiB (vLLM's own suggestion in the log).
+- **Sampling defaults:** the server takes `temperature 0.6, top_p 0.95, max_tokens 32768` from the model's `generation_config.json` when a request does not set them. This confirms the earlier [assumed] claim in the entry on vLLM vs llama.cpp. Always pass these from Inspect.
+- `reasoning_parser=''` (off, as intended). `Using Transformers modeling backend`: vLLM runs Olmo 3 through its Transformers fallback, not a native implementation. Possibly slower than native [assumed]; only matters if throughput disappoints.
+
+---
+
+26-11-21, Claude Opus 5.5 — *single-request speed on the A6000 vs the laptop*; from vLLM's 10-s throughput lines Julian pasted (one request, 20:48:05-20:48:45).
+
+- [verified: vLLM log 26-11-21, one request] 43.9-46.4 generated tokens/s with one request running (the first line, 25.9, covers a window the request only partly filled). The laptop gave 14-16 tokens/s (Q4_K_M, llama.cpp Vulkan). So **about 3× faster per request**, while serving the full bf16 model (14.6 GB) instead of the 4.5 GB compressed one.
+- [concluded: arithmetic; bandwidth figure from memory, not checked] One response at a time is limited by memory bandwidth: every token reads all weights once. The A6000's ~768 GB/s over 14.6 GB of weights gives a ceiling near 52 tokens/s, so 45 is close to it. A faster single response needs a faster card, not other settings.
+- The real gain is parallel requests: the weights are read once per step for all running requests, so total throughput grows with the number of requests until the GPU's compute runs out. Not measured yet; the next measurement is Inspect with e.g. `--max-connections 32` and the summed `Avg generation throughput`.

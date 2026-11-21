@@ -573,6 +573,47 @@ def sync_repo(git_state: LocalGitState) -> None:
     subprocess.run(args, check=True, stdin=subprocess.DEVNULL)
 
 
+# rsync's itemized line for a deletion: "*deleting" padded to the 11-character change field, one
+# space, then the path relative to the destination root (directories end in '/'). Seen in the
+# output of rsync 3.2.7 (tests/vast/test_resync.py runs it for real).
+_RSYNC_DELETING_PREFIX = "*deleting   "
+
+
+def parse_rsync_deletions(itemized: str) -> list[str]:
+    """The paths an `rsync --itemize-changes` run deletes (with `--dry-run`: would delete).
+
+    Sliced at a fixed width rather than split on whitespace, so a path with leading or trailing
+    spaces comes out intact.
+    """
+    return [
+        line[len(_RSYNC_DELETING_PREFIX) :]
+        for line in itemized.splitlines()
+        if line.startswith(_RSYNC_DELETING_PREFIX)
+    ]
+
+
+def dry_run_args(args: list[str]) -> list[str]:
+    """`rsync_args()` turned into a dry run that itemizes changes and prints no progress lines."""
+    assert args[0] == "rsync", args
+    return ["rsync", "--dry-run", "--itemize-changes"] + [
+        a for a in args[1:] if not a.startswith("--info=")
+    ]
+
+
+def files_a_sync_would_delete() -> list[str]:
+    """Paths under the instance's repo that `sync_repo` would delete: files that exist there but
+    not in our working tree, and that the instance's own `.gitignore` files don't cover (rsync
+    reads the receiving side's `.gitignore` files when deciding what `--delete` protects)."""
+    result = subprocess.run(
+        dry_run_args(rsync_args()),
+        check=True,
+        capture_output=True,
+        text=True,
+        stdin=subprocess.DEVNULL,
+    )
+    return parse_rsync_deletions(result.stdout)
+
+
 def check_script(script: str) -> None:
     """The script must be a bash file in the repo that the rsync uploads (i.e. not gitignored)."""
     path = REPO_ROOT / script

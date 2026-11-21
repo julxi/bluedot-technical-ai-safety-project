@@ -10,6 +10,7 @@
     ic-vast rent --script scripts/x.sh    # ... then run that repo script on the instance
     ic-vast rent --dry_run                # show the choice, rent nothing
     ic-vast timer [2h|90m|off]            # show or change the self-destruct timer
+    ic-vast sync [--allow_delete]         # upload the working tree again (HEAD must be pushed)
     ic-vast destroy                       # end the session: record it, destroy the instance
     ic-vast stats                         # what the model has learned, and how calibrated it is
 
@@ -76,12 +77,14 @@ from ic_eval.vast.records import (
     load_records,
 )
 from ic_eval.vast.remote import (
+    REMOTE_REPO_DIR,
     SSH_HOST_ALIAS,
     SSH_OPTS,
     TIMER_LOG,
     LocalGitState,
     attach_ssh_key,
     check_script,
+    files_a_sync_would_delete,
     install_watchdog,
     launch_script,
     local_git_state,
@@ -327,6 +330,34 @@ def timer_command(duration: str | None = None) -> None:
         status = timer_status()
     section("Self-destruct timer")
     values(timer_values(status))
+
+
+def sync(allow_delete: bool = False) -> None:
+    """Upload the local working tree to the current instance again, as `rent` did at rent time.
+
+    The same two steps: the instance's clone is put on our branch and HEAD commit (fetched from
+    GitHub, so HEAD must be pushed), then rsync makes its files match our working tree,
+    uncommitted changes included. Edits made on the instance to files we also have are
+    overwritten. Only files change: a process already running there keeps the code it started
+    with.
+
+    rsync runs with --delete, so files on the instance that we don't have are removed unless the
+    instance's .gitignore covers them. At rent time that only affects the fresh clone; on a used
+    instance it can hit outputs written to tracked paths. So a dry run comes first, and if it
+    would delete anything the sync stops and lists the paths.
+
+    Args:
+        allow_delete: Go ahead even if the sync deletes files on the instance.
+    """
+    assert CURRENT_INSTANCE_PATH.exists(), "no current instance - rent one first"
+    git_state = local_git_state()
+    doomed = files_a_sync_would_delete()
+    if doomed:
+        log(f"The sync would delete {len(doomed)} path(s) on the instance:")
+        for path in doomed:
+            log(f"  {REMOTE_REPO_DIR}/{path}")
+        assert allow_delete, "Not syncing. Copy what you need first, or pass --allow_delete."
+    sync_repo(git_state)
 
 
 def destroy() -> None:
@@ -731,6 +762,7 @@ def cli() -> None:
             "offers": offers,
             "rent": rent,
             "timer": timer_command,
+            "sync": sync,
             "destroy": destroy,
             "stats": stats,
         }

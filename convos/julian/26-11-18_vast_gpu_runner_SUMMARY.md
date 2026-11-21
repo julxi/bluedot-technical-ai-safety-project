@@ -1,6 +1,6 @@
 # SUMMARY: vast.ai GPU launcher `ic-vast` (port of the SPD repo's `spd-vast`)
 
-**Last updated:** 26-11-18 (launcher rebuilt as a package with Bayesian host choice, see the host-selection topic; timer self-destroy verified; watchdog restart fix untested)
+**Last updated:** 26-11-21 (`ic-vast sync` added and verified live; launcher rebuilt as a package with Bayesian host choice, see the host-selection topic; timer self-destroy verified; watchdog restart fix untested)
 
 Julian asked to set up vast.ai GPU rentals here the way his other project, `/home/jx/projects/targeted-parameter-decomposition` ("the SPD repo"), does them, adopt the relevant part of that repo's `docs/CODING.md`, and ask many questions first. The questions, Julian's `C:` answers and the plan are in the LOG.
 
@@ -10,8 +10,9 @@ Julian asked to set up vast.ai GPU rentals here the way his other project, `/hom
   - `ic-vast offers` lists matching offers and rents nothing.
   - `ic-vast rent [--script x.sh] [--config h200] [--timer 2h|off] [--offer_id N] [--dry_run]` rents and prepares a machine, and with `--script` runs that repo script on it.
   - `ic-vast timer [2h|90m|off]` shows or changes the self-destruct timer.
+  - `ic-vast sync [--allow_delete]` uploads the working tree again to a running instance (same fetch + rsync as `rent`; HEAD must be pushed). Added 26-11-21 at Julian's request, after a script written post-rent was missing on the instance. Because the rsync uses `--delete`, a dry run comes first: if any file on the instance not covered by its `.gitignore` would be deleted, it stops and lists the paths unless `--allow_delete` is given. Edits made on the instance to files we also have are overwritten without a check; running processes are unaffected. [verified: live on instance 61848825, 26-11-21, both the clean sync and the stop on a probe file; `--allow_delete` not run live]
   - Ported from the SPD launcher: the offer search, walking down unavailable offers, boot and ssh timeouts, the destroy-output check, and code sync (GitHub clone plus rsync of the working tree; HEAD must be pushed). The host blacklist was first ported, then replaced by the rental history and host model of `convos/julian/26-11-18_vast_host_selection_SUMMARY.md`.
-  - Dropped for now [decided: Julian's answers]: WandB, `uv sync` on the instance, the run/detached/sync modes, forwarding secrets.
+  - Dropped for now [decided: Julian's answers]: WandB, `uv sync` on the instance, the run/detached modes, forwarding secrets. (A sync mode was dropped too, then added on 26-11-21 as `ic-vast sync`, see above.)
 - **Configs**, now in `src/ic_eval/vast/configs/` (filters since loosened, see the host-selection topic):
   - `48gb.yaml` (default; sized for Olmo 3 7B): one of nine 44-48 GB card types, under $1.20/h, 80 GB disk, 3 h timer.
   - `h200.yaml` (sized for Olmo 3 32B): H200, under $7/h, 200 GB disk, 2 h timer.
