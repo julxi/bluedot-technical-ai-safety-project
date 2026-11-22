@@ -1,6 +1,6 @@
 # SUMMARY: Running Olmo 3 7B Think locally with Inspect (learning guide)
 
-**Last updated:** 26-11-21 (vLLM serves Olmo 3 7B Think on a rented A6000 via Julian's `scripts/serve_vllm.sh`; ready 2 min 40 s after start; Inspect through the tunnel not tried yet)
+**Last updated:** 26-11-21 (vLLM serves Olmo 3 7B Think on a rented A6000 via Julian's `scripts/vm/serve_vllm.sh`; ready 2 min 40 s after start; Inspect through the tunnel not tried yet)
 
 Julian wants to write, himself and with guidance, a script that runs Olmo-3-7B-Think on his laptop through the Inspect evaluation framework, to learn the tools before the real runs on a rented GPU.
 
@@ -36,7 +36,7 @@ Julian wants to write, himself and with guidance, a script that runs Olmo-3-7B-T
 
 ## Open (waiting on Julian)
 
-- **vLLM serve script, suggested 26-11-21** (LOG entry *what a vllm serve script should contain*; draft, not tested): `scripts/serve_vllm.sh [model] [revision]` only starts the server; tunnel, health check and Inspect stay on the laptop. It resolves the revision to a commit hash and logs it, binds to 127.0.0.1 (tunnel only), names the model `olmo`, sets `--max-model-len` explicitly (32768 is a placeholder), and `exec`s vLLM. No `--reasoning-parser olmo3` for now [concluded]: `tasks/hello.py`'s own `</think>` split would raise on the parser's output, and leaving it off keeps the raw text comparable with llama.cpp. Inspect: `--model openai-api/vllm/olmo` with `VLLM_BASE_URL=http://localhost:8000/v1` [assumed: untried].
+- **vLLM serve script, suggested 26-11-21** (LOG entry *what a vllm serve script should contain*; draft, not tested): `scripts/vm/serve_vllm.sh [model] [revision]` only starts the server; tunnel, health check and Inspect stay on the laptop. It resolves the revision to a commit hash and logs it, binds to 127.0.0.1 (tunnel only), names the model `olmo`, sets `--max-model-len` explicitly (32768 is a placeholder), and `exec`s vLLM. No `--reasoning-parser olmo3` for now [concluded]: `tasks/hello.py`'s own `</think>` split would raise on the parser's output, and leaving it off keeps the raw text comparable with llama.cpp. Inspect: `--model openai-api/vllm/olmo` with `VLLM_BASE_URL=http://localhost:8000/v1` [assumed: untried].
 - **First start** [verified: Julian's start-up log 26-11-21, one start, RTX A6000 300 W, vLLM 0.34.0]: script start to ready in about 2 min 40 s, of which the 13.59 GiB weights download took 73.6 s (about 198 MB/s) and engine init 35 s. Attention cache 128,957 tokens, 3.94 full 32,768-token requests at once. The server's default sampling comes from `generation_config.json` (temperature 0.6, top-p 0.95, max_tokens 32768), so Inspect must always pass these. The login shell's `python3` lacks `huggingface_hub`; the script needs vLLM's venv (`/venv/main`). Details: LOG entry *first vllm serve start on the A6000*.
 
 - Whether `logs/` (Inspect transcripts) is committed, and a `.gitignore` entry for the cached benchmark CSV (step 6).

@@ -180,6 +180,7 @@ from inspect_ai.solver import TaskState, generate, system_message
 @scorer(metrics=[mean()])
 def finished_thinking():
     """1.0 if the model stopped on its own (not cut off by max_tokens) and gave a non-empty answer."""
+
     async def score(state: TaskState, target: Target) -> Score:
         # YOUR CODE. Things to look at (check the exact names in your editor or the docs):
         #   state.output.stop_reason        -> e.g. "stop" or "max_tokens"
@@ -189,6 +190,7 @@ def finished_thinking():
         # Return Score(value=..., answer=..., explanation=..., metadata={...}).
         # Put the token counts and the thinking length in metadata, so you can see them in `inspect view`.
         raise NotImplementedError
+
     return score
 
 

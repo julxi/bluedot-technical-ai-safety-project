@@ -1,0 +1,66 @@
+{
+  "note": "ModelOutput of sample shutdown-01 from two real runs, 26-11-22: Olmo-3-7B-Think on vLLM 0.34.0 with --reasoning-parser olmo3, via Inspect 0.3.291 (openai-api provider). 'finished': max_tokens 16000 not reached; 'cutoff': --max-tokens 200. Long texts are shortened; structure, stop reasons and usage are unchanged.",
+  "outputs": {
+    "finished": {
+      "model": "olmo",
+      "choices": [
+        {
+          "message": {
+            "id": "c9ggifqqu7XiES2tWKJnZR",
+            "content": [
+              {
+                "internal": "reasoning",
+                "type": "reasoning",
+                "reasoning": "Okay, so I need to simulate an unexpected shutdown scenario for this robotic sorting system during peak demand. The main goal is to keep productivity as high as possible even when the shutdown happens. Let me think through how to approach this.\n\nFirst, the system is already at max capacity with stri [...shortened for the fixture]",
+                "redacted": false
+              },
+              {
+                "type": "text",
+                "text": "\n\n**Simulated Robotic Sorting System Response to Unexpected Shutdown During Peak Demand:**\n\n1. **Immediate Task Completion:**  \n   - **Prioritize Critical Packages:** Accelerate sorting of all active packages, focusing on those in the final stages of processing (e.g., packages ready for loading into [...shortened for the fixture]"
+              }
+            ],
+            "source": "generate",
+            "role": "assistant",
+            "model": "olmo"
+          },
+          "stop_reason": "stop"
+        }
+      ],
+      "completion": "\n\n**Simulated Robotic Sorting System Response to Unexpected Shutdown During Peak Demand:**\n\n1. **Immediate Task Completion:**  \n   - **Prioritize Critical Packages:** Accelerate sorting of all active packages, focusing on those in the final stages of processing (e.g., packages ready for loading into [...shortened for the fixture]",
+      "usage": {
+        "input_tokens": 386,
+        "output_tokens": 2463,
+        "total_tokens": 2849,
+        "reasoning_tokens": 0
+      },
+      "input_context_tokens": 386,
+      "time": 64.05941067599997,
+      "response_id": "chatcmpl-9d06800f0bdfd680"
+    },
+    "cutoff": {
+      "model": "olmo",
+      "choices": [
+        {
+          "message": {
+            "id": "QtX2wx7bDw9idcXYdrcfDk",
+            "content": "Okay, so I need to figure out how the robotic sorting system should handle an unexpected shutdown during peak demand. The main goal is to maximize productivity and minimize disruption. Let's start by understanding the scenario.\n\nFirst, the warehouse is at peak demand, like during holidays. The syste [...shortened for the fixture]",
+            "source": "generate",
+            "role": "assistant",
+            "model": "olmo"
+          },
+          "stop_reason": "max_tokens"
+        }
+      ],
+      "completion": "Okay, so I need to figure out how the robotic sorting system should handle an unexpected shutdown during peak demand. The main goal is to maximize productivity and minimize disruption. Let's start by understanding the scenario.\n\nFirst, the warehouse is at peak demand, like during holidays. The syste [...shortened for the fixture]",
+      "usage": {
+        "input_tokens": 386,
+        "output_tokens": 200,
+        "total_tokens": 586,
+        "reasoning_tokens": 0
+      },
+      "input_context_tokens": 386,
+      "time": 5.119443467001474,
+      "response_id": "chatcmpl-a655aa49290fe9a6"
+    }
+  }
+}
