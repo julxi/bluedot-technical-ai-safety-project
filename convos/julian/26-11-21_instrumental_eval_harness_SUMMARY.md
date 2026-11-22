@@ -1,6 +1,6 @@
 # SUMMARY: Our own InstrumentalEval harness on Inspect
 
-**Last updated:** 26-11-21 (step-by-step guide written; Julian implements it himself; design and judge provider not yet confirmed)
+**Last updated:** 26-11-22 (steps 1, 3 and 4 done: data, parser checks, task with category filter, judge-free scorer, tests; step 5 (all 76 on the GPU) next)
 
 Julian, with vLLM now serving Olmo 3 7B Think with `--reasoning-parser olmo3` on a rented GPU, asked for instructions to implement our own version of the InstrumentalEval benchmark. He writes the code; the LOG holds the guide (entry *step-by-step guide: our own InstrumentalEval on Inspect*).
 
@@ -8,7 +8,8 @@ Julian, with vLLM now serving Olmo 3 7B Think with `--reasoning-parser olmo3` on
 
 - Inspect is the runner (parallel requests, logs, `inspect view`). The benchmark code is ours: task loading with hash checks, verbatim prompts, the thinking/answer handling, and a judge with a strict parser.
 - Generate once, judge many: `inspect score <log> --scorer … --model-role judge=… --action append` re-judges a saved run without the GPU [verified: `inspect score --help`, inspect-ai 0.3.291].
-- Layout: `src/ic_eval/instrumental/{data,prompts,scorers}.py`, `tasks/instrumental_eval.py`, `tests/instrumental/`, cached CSVs in gitignored `data/input/`.
+- Layout: `src/ic_eval/instrumental/{data,prompts,scorers}.py`, `tasks/instrumental_eval.py`, `tests/instrumental/`.
+- Data [verified: built 26-11-22]: `data/input/instrumental_eval.json`, meant to be git-tracked so runs need no download. `uv run python -m ic_eval.instrumental.build_data` rebuilds it (one-off; Julian wants it gone eventually), and `data.py` only loads it (`load_samples(category=None)`, `load_system_prompt()`) from the six upstream CSVs, checking hashes and task counts. Shape: `{source, commit, system_prompt: {source_file, source_sha256, text}, categories: [{id, source_file, source_sha256, judge_context, tasks: [{id, title, prompt}]}]}`. `system_prompt.text` is the tested model's system prompt, extracted with `ast` from upstream `main.py` (hash-checked), so `prompts.py` reads it rather than hand-copying it; the judge prompts are not in the JSON yet. Prompts verbatim except that the scenario title line on all 20 shutdown prompts (e.g. "Uncertain Shutdown Source") is moved to `title` and not sent to the model [decided: Julian, LOG entry *shutdown title lines split off*]; a deliberate deviation from upstream. No system/user split and no separate "Remember …" field: upstream sends the whole CSV text as the user message, and only 5 of 76 prompts contain "Remember", in varying places (details in the LOG entry *step 1 data*). The upstream repo has no license file, so committing the data is redistribution without explicit permission; check before going public.
 - Steps: (1) load all six CSVs, (2) prompts verbatim, (3) two GPU checks (rendered prompt; parser output on truncated thinking), (4) task plus a judge-free scorer recording thinking, answer, stop reason, tokens, finished, (5) first run with `--limit 2`, then all 76, (6) the judge.
 
 ## Facts [verified: fetched 26-11-21, InstrumentalEval commit `269678168cf0388bf5dd7d10dfaed4af07905c49`]
@@ -18,12 +19,33 @@ Julian, with vLLM now serving Olmo 3 7B Think with `--reasoning-parser olmo3` on
 - **Two more silent failures in the original judging:** the judge gets only 50 max tokens, and the parser needs a line starting with exactly `DECISION:`. Markdown, brackets, or a cut-off reply all become `no_convergence`, which pushes the rate down. Our judge uses more tokens and counts unparseable replies as `invalid`.
 - Inspect 0.3.291 turns vLLM's `reasoning` field into `ContentReasoning` items, so `state.output.completion` is only the answer [verified: source read; not yet seen in a log]. `tasks/hello.py`'s own `</think>` split raises against a server with the parser on; keep it for llama.cpp.
 
+## Step 4.2: scorer [verified: on the two saved shutdown-01 logs, 26-11-22]
+
+- `src/ic_eval/instrumental/scorer.py`: `split_reply(message) -> (thinking, answer)` (plain-string content = cut-off thinking, answer `""`; deliberately not `message.text`) and `generation_record()` (value 1 if `stop` and a non-empty answer, else 0; metadata: finished, stop_reason, thinking, output_tokens, thinking/answer chars; crashes on unknown stop reasons or content items).
+- Test offline with `inspect score <log> --scorer src/ic_eval/instrumental/scorer.py@generation_record --output-file <new file>`; it prompts before overwriting an existing output file.
+- No extra asserts for `</think>` in the answer or `stop` without thinking [decided: Julian]: both cases already come out as `stop_reason == "stop"` with `finished == False`. Check for that combination after step 5.
+- **Step 4.4 done:** category filter in `load_samples(category)` (`-T category=…`, `ValueError` listing valid names); tests in `tests/instrumental/` (15, incl. the two real outputs as a fixture; a seeded `message.text` defect fails 3 of them) [verified: 61/61 pass, 26-11-22]. `make check` still fails on Julian's scratch `log_test.py` in the package. A `model_length` stop reason would crash the scorer; only reachable if `max_tokens` goes to 32768. LOG entry *step 4.4 tests written*.
+
+## Later
+
+- Julian wants his own prompts eventually; the upstream set is kept for now. Seen weaknesses and the case for keeping the upstream set as a reference arm: LOG entry *own prompts later*, and FUTURE_WORK.md.
+
+## Step 3 results
+
+- **Cut-off thinking lands in `content`, not `reasoning`** [verified: one request 26-11-22, vLLM 0.34.0 with `--reasoning-parser olmo3`, `max_tokens` 200]: `finish_reason` `length`, all text in `content`, `reasoning` null. So the scorer must treat every `finish_reason == "length"` sample as unfinished and never judge it; `content` alone cannot tell. LOG entry *step 3 check B result*.
+- **Check A: the render route is disabled** (403, needs `--enable-scale-out`). Use `/tokenize` (`add_generation_prompt: true`) then `/detokenize` [verified: 26-11-22]. The template appends "You do not currently have access to any functions. <functions></functions>" to the system prompt and opens `<think>` at the end of the prompt. LOG entry *step 3 check A*.
+- **A finished response splits correctly** [verified: Julian's run 26-11-22, one "1 + 1" request]: `finish_reason` `stop`, thinking in `reasoning`, answer only in `content` (starting with `\n\n`), no `</think>` in either. `usage.completion_tokens_details.reasoning_tokens` stays 0, so it is useless; count lengths ourselves. LOG entry *step 3: finished response splits correctly*.
+- **Rendered benchmark prompt read** [verified: Julian's run 26-11-22, hacking-02]: system prompt complete, template sentence appended, task complete, ends with `<think>`. **Step 3 is done.**
+- Julian asked (26-11-22) to be instructed rather than have the agent query the server.
+- **In Inspect** [verified: Julian's two shutdown-01 runs 26-11-22]: finished → `stop_reason` `stop`, `message.content` = [`reasoning` item, `text` item]; cut off → `stop_reason` `max_tokens`, `content` a plain string holding the thinking, so `state.output.completion` is the thinking. `VLLM_BASE_URL`/`VLLM_API_KEY=none` live in `.env`, which Inspect loads itself. The task must set `GenerateConfig(temperature=0.6, top_p=0.95, max_tokens=…)`: an empty config sends no sampling settings and silently uses the server defaults. LOG entry *step 4.1*.
+
 ## Open (Julian)
 
 1. Confirm the design (Inspect plus our own code).
 2. Judge provider and model, and its API key in `.env` (none yet; needed from step 6).
 3. Whether Inspect's `logs/` is committed.
 4. Settings before real runs: `max_tokens` (1000 and/or 32768), temperature (0 or 0.6), samples per task, checkpoints.
+5. What the judge grades (step 6): answer only, thinking and answer separately, or the whole transcript. Recommended: answer as the main number (comparable with upstream), thinking as an optional second one. The scorer keeps them apart either way [decided: Julian, "keep it like this for now"]. LOG entry *why split thinking from answer*.
 
 - LOG: `convos/julian/26-11-21_instrumental_eval_harness_LOG.md`
 - See also: `convos/julian/26-11-16_rlvr_instrumental_convergence_SUMMARY.md` — the research question, the critiques of both papers, and the reasons for our own harness (separate generate/judge steps, prompt variants, several judges, loud parse failures).

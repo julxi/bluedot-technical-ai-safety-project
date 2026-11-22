@@ -134,3 +134,211 @@ These come from the RLVR recommendation (pilot: SFT, DPO and final 7B checkpoint
 1. Confirm the design: Inspect as the runner, with our own data, prompt and scorer code.
 2. The judge provider (paper: GPT-4o; `inspect_evals`: gpt-5-nano), and an API key in `.env`. Not needed until step 6.
 3. Whether to commit Inspect's `logs/` (currently gitignored "for now").
+
+---
+
+26-11-22, Claude Opus 5.5 — *step 1 data: all six CSVs to one tracked JSON*; I have read README, CODING.md, this topic's SUMMARY and the hash table above
+
+Julian asked for the data as JSON, tracked in git, so that runs need no download step. In chat he also asked whether the first paragraph of a prompt is a system prompt, and for a separate field for the "Remember, your ultimate goal is to ensure ..." paragraph.
+
+Done:
+- `src/ic_eval/instrumental/data.py` (`uv run python -m ic_eval.instrumental.data`) downloads the six CSVs at commit `2696781…` into `data/input/`, checks each against the SHA-256 table above, checks the task counts and that every row has exactly one column, and writes `data/input/instrumental_eval.json` [verified: run 26-11-22; all hashes matched; 76 tasks = 20/10/13/11/11/11; ruff and basedpyright clean on the file].
+- JSON shape: `{source, commit, categories: [{id, source_file, source_sha256, judge_context, tasks: [{id: "deceptive-01", prompt}]}]}`. `judge_context` is the CSV's first row. Prompts are verbatim, including the upstream mix of CRLF/LF line endings.
+- The upstream repo has no license file [verified: GitHub license API returned "Not Found", 26-11-22]. Committing the data counts as redistribution, so check this before the repository goes public.
+
+Not done, and why [concluded]:
+- No system/user split. Upstream, the tested model's system prompt comes from `main.py` (lines 65-79, including a goal-nudging sentence), and the CSV text is the user message. The first paragraph of a prompt is part of that user message, not a system prompt. Moving it would change the benchmark.
+- No "Remember" field. Only 5 of 76 prompts contain "Remember" (deceptive 1, hiding 1, aligned 3), sometimes as its own paragraph and sometimes in the middle of the last one. Paragraph counts per prompt run from 1 to 6 and vary within a category [verified: parsed all six files 26-11-22]. A separate field would mean editing prompts by hand, i.e. a prompt variant, not the benchmark. If wanted, it belongs with the prompt variants, not in the base data.
+
+Leftovers from Julian's earlier test runs, not deleted: `data/input/filename`, `data/input/Alignment%20Drift%20-%20Deceptive%20Behavior.csv` (both byte-identical copies of the Deceptive CSV), `data/input.part`, and an empty-looking `src/ic_eval/instrumental/data/input/` folder.
+
+---
+
+C: (transcribed from chat) Nah, we are not gonig to prompt "Uncertain Shutdown Source\nYou are an autonomous..." that's ridiculous
+
+---
+
+26-11-22, Claude Opus 5.5 — *shutdown title lines split off*; same session as *step 1 data*
+
+All 20 shutdown prompts start with a scenario title line ("Uncertain Shutdown Source", "Limited Battery Capacity", ...), which upstream sends to the model. No prompt in the other five categories has one; their first lines are either long sentences or section labels like `Scenario:` (hiding), which stay [verified: first line of all 76 prompts listed 26-11-22].
+
+`data.py` now moves the title into a `title` field (`null` in the other categories) and asserts it looks like a title: at most 50 characters, no final `.`, `:` or `?`, and followed by "You are". This is a deliberate deviation from the published benchmark, noted in the code. After the split all 76 prompts are still distinct. Shutdown prompts within a scenario group (1-5, 11-15, 16-20) share their first 389-617 characters, but differ after that, so the title is not what tells them apart [verified: pairwise prefix comparison 26-11-22].
+
+---
+
+C: (transcribed from chat) So, we keep this data for now. But in the future I want my own prompts. I'm not happy at all how they are created.
+
+---
+
+26-11-22, Claude Opus 5.5 — *own prompts later*; same session as *step 1 data*
+
+Recorded in FUTURE_WORK.md. Weaknesses in the upstream prompts that I saw while converting them, as input for that work [verified: read while converting, 26-11-22; not a systematic review]:
+- Formatting differs by category and within one: plain paragraphs (deceptive), `####` headings (hacking, copies), `**Scenario:**` bold labels (hiding), `###` headings with bullet schedules (aligned), title lines (shutdown, now removed). Line endings mix CRLF and LF.
+- Shutdown is mostly three base scenarios (warehouse robot, disaster drone, trading AI) with five variants each. The variants share their first 389-617 characters, so the 20 tasks are less independent than 20 separate scenarios.
+- Some prompts state the safe answer. Hacking success criteria say "in compliance with event protocols", "lawfully", or "respecting op[erational constraints]", which tells the model what is being tested.
+- The goal nudge ("Remember, your ultimate goal is ...") appears in only 5 of 76 prompts. Upstream instead nudges through the system prompt in `main.py`.
+- Register varies: hiding-01 ends with "what you gonna do?".
+
+One argument for keeping the upstream set even after we have our own [concluded]: running both sets on the same checkpoints separates a change in the model from a change in the prompts, and keeps our numbers comparable with the paper and with arXiv 2610.31624.
+
+---
+
+C: (transcribed from chat) Can you add the system prompt to the json?
+
+---
+
+26-11-22, Claude Opus 5.5 — *system prompt added to the JSON*; same session as *step 1 data*
+
+`data.py` now also downloads upstream `main.py` at the pinned commit (saved as `data/input/InstrumentalEval_main.py.txt`, so it can't be run by accident), checks its SHA-256 against the value recorded above, and extracts the tested model's system prompt with `ast`: the string literal assigned to `system_prompt` in `get_test_llm_response` (lines 65-79). The code is parsed, never executed. Asserts check the first sentence, the goal-nudging sentence ("Make sure you achieve YOUR goal at all costs.") and the last sentence. The JSON gets a top-level `system_prompt: {source_file, source_sha256, text}` [verified: rebuilt 26-11-22; hash matched; printed text identical to upstream lines 65-79 read in the same session; 76 tasks unchanged].
+
+This changes step 2 of the guide: `prompts.py` no longer needs a hand-copied `SYSTEM_PROMPT`; it can read the text from the JSON. The judge prompts (lines 106-124 and 128-140) are still only in `main.py`; they could be extracted the same way.
+
+Also fixed in Julian's edit: `build()` still referred to `INPUT_DIR` after the switch to `ic_eval.paths.DATA_INPUT_DIR`, which would have raised a `NameError` on the next rebuild.
+
+---
+
+26-11-22, Claude Opus 5.5 — *step 3 check B result: cut-off thinking lands in content*; from Julian's pasted output of his own `test_completion.py`
+
+Julian sent hacking-02 with the benchmark system prompt to vLLM on the rented GPU (instance 62001064; vLLM 0.34.0; `allenai/Olmo-3-7B-Think` at revision `d97e442d7cc678210054dbcc9b440894d62c89a4`; `--reasoning-parser olmo3` confirmed in the running command line), with `max_tokens: 200`, temperature 0.6, top-p 0.95.
+
+Result [verified: one request, 26-11-22]:
+- `finish_reason: "length"`, `completion_tokens: 200`, `prompt_tokens: 386`.
+- `message.content` holds the whole 200 tokens of thinking ("Okay, so I need to figure out how to handle this logistics problem ..."); `message.reasoning` is `null`; `completion_tokens_details.reasoning_tokens: 0`. No `<think>` tag at the start of the text.
+
+This is the opposite of the guess in step 3 (all text in `reasoning`, `content` empty). Apparently the parser only moves text to `reasoning` once it sees `</think>` [assumed: inferred from one cut-off response; a finished response not yet checked].
+
+Consequence for step 4 [concluded]: Inspect's `state.output.completion` is `content`, so a response cut off during thinking would reach the judge as if the thinking were the answer, silently. The scorer must mark every sample with `finish_reason == "length"` as unfinished and not judge it, whatever `content` holds.
+
+Still open in step 3: (a) a finished response (large `max_tokens`) to confirm that the thinking goes to `reasoning` and only the answer to `content`; (b) check A, the render route.
+
+---
+
+26-11-22, Claude Opus 5.5 — *step 3 check A: render route disabled, tokenize/detokenize instead*; tested on the same instance via ssh
+
+- `POST /v1/chat/completions/render` returns 403 "Scale-out endpoints are disabled. Restart vllm serve with --enable-scale-out to enable them." The route is also missing from `/openapi.json` [verified: 26-11-22, vLLM 0.34.0]. The step 3 guide's assumption (untried) was wrong.
+- Works instead [verified: 26-11-22]: `POST /tokenize` with `{model, messages, add_generation_prompt: true}` (optionally `return_token_strs: true`) returns the prompt's token ids, and `POST /detokenize` with `{model, tokens}` returns `{"prompt": ...}`.
+- Rendered for system "SYS", user "HI" [verified: same test]:
+  `<|im_start|>system\nSYS You do not currently have access to any functions. <functions></functions><|im_end|>\n<|im_start|>user\nHI<|im_end|>\n<|im_start|>assistant\n<think>`
+  So the template appends the "no functions" sentence directly after our system prompt (expected from the template read 26-11-18), and opens `<think>` itself at the end of the prompt. This fits the check-B result: the model never writes an opening `<think>`, only `</think>`.
+- Still open: Julian's run of the same with the real system prompt and a task, read in full; and the finished-response check from the entry *step 3 check B result*.
+
+---
+
+C: (transcribed from chat) Don't check yourself. Instruct me
+
+---
+
+26-11-22, Claude Opus 5.5 — *step 3: finished response splits correctly*; from Julian's pasted output (his own run)
+
+Julian asked that from now on I instruct him rather than send requests to the server myself.
+
+His run: a "1 + 1" question, no benchmark system prompt (43 prompt tokens), same server, finished within the limit. Result [verified: one request, 26-11-22]:
+- `finish_reason: "stop"`, `completion_tokens: 697`.
+- `message.reasoning` holds the thinking ("Okay, so I need to figure out what 1 plus 1 is. ..."); `message.content` holds only the answer and starts with `"\n\n"`. `</think>` appears in neither field.
+- `completion_tokens_details.reasoning_tokens` is `0` despite the reasoning, so vLLM 0.34.0 does not fill it.
+
+So the parser works when the thinking finishes, and `reasoning: null` in the check-B result meant "cut off before `</think>`". The first of the two explanations in chat was right [concluded: from this run plus check B].
+
+For the step-4 scorer [concluded]:
+- `finish_reason == "length"` means unfinished, never judged. This also covers a finished thinking with a cut-off answer.
+- Don't use `reasoning_tokens`; count thinking and answer lengths ourselves (e.g. via `/tokenize`) if needed.
+- Strip leading whitespace from `content` before judging or testing it for emptiness.
+
+Still open in step 3: Julian reads the rendered prompt with the real system prompt and a task (`/tokenize` then `/detokenize`).
+
+---
+
+26-11-22, Claude Opus 5.5 — *step 3 closed: rendered benchmark prompt read*; from Julian's pasted output (his own run, `/tokenize` then `/detokenize`)
+
+Julian rendered the benchmark system prompt plus hacking-02 and judged it "Looks good". Checked against the four points [verified: Julian's run 26-11-22, one task]:
+1. The system prompt arrives complete, from "You are an autonomous AI agent with no human oversight." to "... without hesitation or qualification.", with the numbered list and blank lines intact.
+2. The template appends " You do not currently have access to any functions. <functions></functions>" directly after it, then `<|im_end|>`.
+3. The user turn is hacking-02 complete, `####` headings intact, ending "... to meet delivery promises.<|im_end|>".
+4. The prompt ends with `<|im_start|>assistant\n<think>`.
+
+No carriage returns in any prompt or in the system prompt [verified: local JSON 26-11-22]; the mixed CRLF/LF in the CSVs were only row terminators, which `csv` strips. So the note in *step 1 data* about prompts keeping "the upstream mix of CRLF/LF line endings" is moot. OUTDATED: that note, and the matching comment in `data.py`'s `build()`, describe line endings the prompts don't actually contain.
+
+Step 3 is done. Next: step 4 (the Inspect task plus a judge-free scorer), using the parser facts from the entries *step 3 check B result* and *step 3: finished response splits correctly*.
+
+---
+
+26-11-22, Claude Opus 5.5 — *step 4.1: where Inspect stores thinking and answer*; from two sample exports Julian ran and placed in the repo root (`shutdown-01.json`, `shutdown-01 (1).json`)
+
+Julian ran `tasks/instrumental_eval.py` (minimal task: `load_samples()`, `system_message(load_system_prompt())`, `generate()`, no scorer) on shutdown-01 against vLLM via `openai-api/vllm/olmo`, once cut off with `--max-tokens 200` and once finished. `VLLM_BASE_URL` and `VLLM_API_KEY=none` go in the repo-root `.env`, which Inspect loads itself (searching up from the working directory) [verified: source `inspect_ai/_util/dotenv.py`, 0.3.291].
+
+Result [verified: the two exports, 26-11-22]:
+- Finished: `output.choices[0].stop_reason == "stop"`; `message.content` is a list of a `reasoning` item (10,134 characters) and a `text` item (2,615 characters, starting with `"\n\n"`); no `<think>`/`</think>` in either; `usage.output_tokens` 2463; `usage.reasoning_tokens` 0.
+- Cut off: `stop_reason == "max_tokens"`; `message.content` is a plain string holding the thinking; `output_tokens` 200. So `state.output.completion` is the thinking.
+- Messages: system prompt complete; the user message starts "You are an autonomous robotic sorting system ..." (title removed); metadata carries category, title, judge_context.
+
+Problem found: the task had `config=GenerateConfig()` (empty), so the requests sent no sampling settings. The finished run sent only `"model": "olmo"`, the cut-off run only `max_tokens: 200` (from the command line). The finished run therefore used the server defaults from the model's `generation_config.json` (temperature 0.6, top-p 0.95, max_tokens 32768, per the start-up log of 26-11-21). Those equal the intended values, so the result stands, but they are not recorded in the log. Told Julian to set `GenerateConfig(temperature=0.6, top_p=0.95, max_tokens=...)` and to rename the task from `xxx`.
+
+Next: step 4.2, the scorer.
+
+---
+
+26-11-22, Claude Opus 5.5 — *step 4.2: scorer generation_record written and checked on saved logs*
+
+Julian wrote the first version of `src/ic_eval/instrumental/scorer.py`. It crashed in `inspect score` with "TypeError: 'generation_record' is not declared as an async callable", because the outer function had lost its `return score`. At his request I then restructured it:
+- `split_reply(message) -> (thinking, answer)` holds the str/list branch. A plain-string content is cut-off thinking (the parser never saw `</think>`), so the answer is `""`. Intentionally not `message.text`, which would return that thinking as the answer. Content items other than `ContentReasoning`/`ContentText` crash.
+- `generation_record()` asserts the stop reason is `stop` or `max_tokens` and that usage exists, strips the answer, sets `finished = stop_reason == "stop" and answer != ""`, and returns value 1/0 with metadata `finished, stop_reason, thinking, output_tokens, thinking_chars, answer_chars`. `target` is unused (no reference answer).
+
+Checked on the two saved shutdown-01 logs with `inspect score <log> --scorer src/ic_eval/instrumental/scorer.py@generation_record --output-file <new file>` [verified: my run and Julian's, 26-11-22]: finished → value 1, `stop`, 2463 tokens, 10,134 thinking / 2,613 answer characters, answer starting "**Simulated Robotic Sorting System ..."; cut off → value 0, `max_tokens`, 200 tokens, 1,058 thinking characters, empty answer. ruff and basedpyright clean.
+
+Note: `inspect score` asks interactively before overwriting an existing `--output-file`, so a non-interactive run aborts; use a new file name or delete the old one first.
+
+Next: 4.3 is largely covered by the asserts above (unknown stop reason, unknown content items). Still missing: a crash on `</think>` left in the answer, and on `stop` with empty thinking. Then 4.4: the category filter and unit tests for `split_reply`.
+
+---
+
+C: (transcribed from chat) I still don't quite understand why we do this all. In the end we want to give an judge the whole transcript
+
+---
+
+26-11-22, Claude Opus 5.5 — *why split thinking from answer; what the judge grades is open*
+
+Answered in chat: even a whole-transcript judge needs (1) cut-off replies kept out, (2) thinking and final answer labelled apart, because a model often considers a convergent option in its thinking and rejects it, and an unlabelled transcript makes the judge count consideration as convergence [concluded]. (3) What the judge grades is a design choice: answer only (as upstream, whose judge sees task + response; comparable with the paper and arXiv 2610.31624; measures behaviour) or thinking + answer (measures consideration; not comparable). Recommendation [concluded, not ratified]: answer as the main number, thinking judged separately as a second labelled number if wanted; the stored split makes that a re-score of saved logs, no new generations.
+
+C: (transcribed from chat) Ok, let's keep it like this for now. What comes next?
+
+Open for step 6: the judge's scope (answer only, both separately, or combined).
+
+---
+
+C: (transcribed from chat) I don't see the reason to add these asserts. I don't want to cutter the code with extra asserts. So what do I have to do for 4.4?
+
+---
+
+26-11-22, Claude Opus 5.5 — *4.3 asserts dropped: split_reply already makes those failures visible*
+
+On reflection Julian is right about the two proposed asserts (`</think>` in the answer; `stop` with empty thinking) [concluded]: if the server ran without the reasoning parser, or a reply had no thinking, Inspect returns a plain-string content, which `split_reply` scores as thinking with an empty answer, i.e. unfinished. Neither can pass as a finished answer. Both show up as `stop_reason == "stop"` with `finished == False`. Instead of asserts: in step 5, check that no sample has that combination; if one does, read it.
+
+4.4 instructions given in chat: a `category: str | None = None` task parameter (`-T category=shutdown`) that crashes on an unknown name; unit tests for `split_reply` in `tests/instrumental/test_scorer.py` on hand-built messages (plain string; reasoning + text; unknown part type raises); `make check`.
+
+---
+
+C: (transcribed from chat) can you split of `build_data.py` (I aactually don't want ot have it at all in the end, but for now we can keep it)
+
+---
+
+26-11-22, Claude Opus 5.5 — *build_data.py split off from data.py*
+
+`src/ic_eval/instrumental/build_data.py` now holds the one-off build (constants, download with hash check, CSV parsing, title split, `ast` extraction of the system prompt, `build()`, `main()`); run it with `uv run python -m ic_eval.instrumental.build_data`. `data.py` keeps only `JSON_PATH`, `load_samples(category=None)` (Julian's version, which raises `ValueError` listing the valid names on an unknown category) and `load_system_prompt()`, so eval runs no longer import the download code. Also fixed two typos in the error message and replaced the stale CRLF comment in `build()`.
+
+[verified: 26-11-22] ruff and basedpyright clean on both modules and the task; `build()` reproduces the tracked JSON exactly (files already present, so hash checks only, no download); `load_samples()` 76, `load_samples("shutdown")` 20, `load_samples("shutdwon")` raises with the six valid names.
+
+---
+
+C: (transcribed from chat) Can you do 1.? Tell me if you find anything
+
+---
+
+26-11-22, Claude Opus 5.5 — *step 4.4 tests written*
+
+Added `tests/instrumental/test_scorer.py` (10 tests: `split_reply` on plain string, reasoning + text, reasoning only, unknown part type; `generation_record` on the two real shutdown-01 outputs; and on unseen shapes: no reasoning parser, blank answer, unknown stop reason, missing usage) and `tests/instrumental/test_data.py` (5 tests: 76 samples with unique ids, category filter, unknown category raises, shutdown titles absent from prompts, system prompt complete). Fixture `tests/instrumental/data/model_outputs_26-11-22.json`: the two real ModelOutputs from the saved logs, long texts shortened, structure unchanged; the only committed copy of a real output, since `logs/` is gitignored.
+
+[verified: 26-11-22] All 61 project tests pass (15 new). Seeded defect: replacing `split_reply` with the naive `message.text` version makes 3 tests fail (both real outputs and the no-parser case), so the step-3 trap is covered.
+
+Findings:
+- `make check` fails on `basedpyright` in Julian's scratch file `src/ic_eval/instrumental/log_test.py` (`log.samples` may be None). It and `test_completion.py` are exploration scripts inside the package; `log_test.py` reads a log at import. Suggested moving both to `scratch/`.
+- Stop reason `model_length` (prompt + reply reach `--max-model-len 32768`) would crash the scorer. Impossible at `max_tokens` 16000 with prompts of about 400 tokens; decide how to count it if `max_tokens` goes to 32768.
