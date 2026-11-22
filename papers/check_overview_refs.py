@@ -16,6 +16,7 @@ Usage: python3 -I papers/check_overview_refs.py [--show]
           check the section, not the meaning).
 Exits 1 on any bad or malformed reference.
 """
+
 import re
 import sys
 from pathlib import Path
@@ -36,7 +37,7 @@ def nearest_heading(lines: list[str], line_no: int) -> str:
     """Text of the closest heading at or above 1-based line_no, ignoring fenced blocks."""
     in_fence = False
     last = None
-    for i, line in enumerate(lines[:line_no], start=1):
+    for line in lines[:line_no]:
         if line.startswith("```"):
             in_fence = not in_fence
             continue
@@ -60,7 +61,10 @@ def check_overview(overview: Path, show: bool) -> list[str]:
         refs = list(REF_RE.finditer(ov_line))
         # A "§" outside a well-formed reference is a typo that would otherwise go unchecked.
         if ov_line.count("§") != len(refs):
-            errors.append(f"{overview.name}:{ov_no}: malformed reference (expected [§label lA-B]): {ov_line.strip()[:120]}")
+            errors.append(
+                f"{overview.name}:{ov_no}: malformed reference (expected [§label lA-B]): "
+                f"{ov_line.strip()[:120]}"
+            )
         for m in refs:
             n_refs += 1
             label, start = m.group(1), int(m.group(2))
@@ -74,7 +78,10 @@ def check_overview(overview: Path, show: bool) -> list[str]:
                 errors.append(f"{where}: line {start} is under heading '{heading}', not '§{label}'")
             if show:
                 print(f"{where}\n    l{start}: {paper_lines[start - 1][:150]}")
-    print(f"{overview.name}: {n_refs} references checked against {paper.name} ({len(paper_lines)} lines)")
+    print(
+        f"{overview.name}: {n_refs} references checked against {paper.name} "
+        f"({len(paper_lines)} lines)"
+    )
     return errors
 
 

@@ -5,8 +5,10 @@ Handles: headings, paragraphs, inline/display math (from the TeX annotation),
 tables (GFM), text-box figures (blockquotes), itemize lists, bibliography.
 Fails loudly on any element class it does not know how to handle at block level.
 """
+
 import re
 import sys
+from pathlib import Path
 
 import bs4
 
@@ -40,13 +42,18 @@ def inline(node):
     if "ltx_rule" in cl:
         return ""
     if "ltx_itemize" in cl:
-        assert node.find_parent("td") is not None, f"list in inline context outside a table cell: {node.get('id')}"
+        assert node.find_parent("td") is not None, (
+            f"list in inline context outside a table cell: {node.get('id')}"
+        )
         items = node.find_all(class_="ltx_item", recursive=False)
         assert items, f"empty list {node.get('id')}"
         rendered = []
         for it in items:
-            body = "".join(inline(c) for c in it.children
-                           if not (isinstance(c, bs4.Tag) and "ltx_tag_item" in classes(c)))
+            body = "".join(
+                inline(c)
+                for c in it.children
+                if not (isinstance(c, bs4.Tag) and "ltx_tag_item" in classes(c))
+            )
             rendered.append("• " + WS.sub(" ", body).strip())
         print(f"list {node.get('id')} in table cell rendered inline with <br>", file=sys.stderr)
         return " <br>" + "<br>".join(rendered) + "<br>"
@@ -58,7 +65,7 @@ def inline(node):
     mono = "ltx_font_typewriter" in cl
     if (bold or ital or mono) and inner.strip():
         lead = inner[: len(inner) - len(inner.lstrip())]
-        trail = inner[len(inner.rstrip()):]
+        trail = inner[len(inner.rstrip()) :]
         core = inner.strip()
         if mono:
             core = f"`{core}`"
@@ -115,16 +122,30 @@ def figure_box(fig):
         if "ltx_p" in cl and not el.find_parent("span", class_="ltx_item"):
             lines.append(line(el))
         elif "ltx_item" in cl:
-            body = "".join(inline(c) for c in el.children if not (isinstance(c, bs4.Tag) and "ltx_tag_item" in classes(c)))
+            body = "".join(
+                inline(c)
+                for c in el.children
+                if not (isinstance(c, bs4.Tag) and "ltx_tag_item" in classes(c))
+            )
             lines.append("- " + WS.sub(" ", body).strip())
-    lines = [l for l in lines if l]
+    lines = [ln for ln in lines if ln]
     assert lines, f"figure box produced no text: {fig.get('id')}"
-    return "\n>\n".join("> " + l for l in lines)
+    return "\n>\n".join("> " + ln for ln in lines)
 
 
 HEADING = {"h1": "#", "h2": "##", "h3": "###", "h4": "####", "h5": "#####", "h6": "######"}
-PASS = {"ltx_para", "ltx_logical-block", "ltx_flex_figure", "ltx_flex_cell", "ltx_section",
-        "ltx_subsection", "ltx_subsubsection", "ltx_appendix", "ltx_abstract", "ltx_bibliography"}
+PASS = {
+    "ltx_para",
+    "ltx_logical-block",
+    "ltx_flex_figure",
+    "ltx_flex_cell",
+    "ltx_section",
+    "ltx_subsection",
+    "ltx_subsubsection",
+    "ltx_appendix",
+    "ltx_abstract",
+    "ltx_bibliography",
+}
 
 
 def blocks(node, out):
@@ -139,7 +160,12 @@ def blocks(node, out):
             out.append("    ".join(line(p) for p in c.find_all(class_="ltx_personname")))
         elif "ltx_pagination" in cl or "ltx_rule" in cl:
             continue
-        elif c.name == "table" and "ltx_tabular" in cl and not c.get_text(strip=True) and not c.find("math"):
+        elif (
+            c.name == "table"
+            and "ltx_tabular" in cl
+            and not c.get_text(strip=True)
+            and not c.find("math")
+        ):
             print(f"skipped empty layout table {c.get('id')}", file=sys.stderr)
             continue
         elif c.name == "table" and "ltx_tabular" in cl:
@@ -153,10 +179,15 @@ def blocks(node, out):
         elif c.name == "figure" and "ltx_table" in cl:
             cap = c.find("figcaption")
             tabs = c.find_all("table", class_="ltx_tabular")
-            assert cap is not None and len(tabs) >= 1, f"table figure {c.get('id')}: {len(tabs)} tables"
+            assert cap is not None and len(tabs) >= 1, (
+                f"table figure {c.get('id')}: {len(tabs)} tables"
+            )
             assert not any(t.find_parent("table") for t in tabs), f"nested table in {c.get('id')}"
             if len(tabs) > 1:
-                print(f"{c.get('id')}: {len(tabs)} side-by-side panels, emitted in sequence", file=sys.stderr)
+                print(
+                    f"{c.get('id')}: {len(tabs)} side-by-side panels, emitted in sequence",
+                    file=sys.stderr,
+                )
             out.append(line(cap))
             out.extend(table_md(t) for t in tabs)
         elif c.name == "figure" and "ltx_figure" in cl:
@@ -185,7 +216,7 @@ def blocks(node, out):
 
 def main():
     src, dst = sys.argv[1], sys.argv[2]
-    soup = bs4.BeautifulSoup(open(src, encoding="utf-8").read(), "html.parser")
+    soup = bs4.BeautifulSoup(Path(src).read_text(encoding="utf-8"), "html.parser")
     arts = soup.find_all("article")
     assert len(arts) == 1, len(arts)
     n_ext = 0
@@ -200,7 +231,7 @@ def main():
     out = []
     blocks(arts[0], out)
     text = "\n\n".join(out) + "\n"
-    open(dst, "w", encoding="utf-8").write(text)
+    Path(dst).write_text(text, encoding="utf-8")
     print(f"wrote {dst}: {len(out)} blocks, {len(text)} chars")
 
 
