@@ -11,26 +11,18 @@ cd "$(dirname "$0")/../.."
 
 PORT=8000
 TIMEOUT_S=900 # first start took 2 min 40 s (weights download + engine init), 26-11-21
-CURRENT=scratch/vast_current_instance.json
 REMOTE_LOGS=/root/bluedot/logs/remote
 
-# ic-vast keeps the active instance in this file until `ic-vast destroy`. Renting again would
-# overwrite it: the old session would never be recorded, and the instance might still be billing.
-if [[ -e $CURRENT ]]; then
-  echo "[gpu_up] $CURRENT exists, so an instance is still recorded as active:" >&2
-  cat "$CURRENT" >&2
-  echo >&2
-  echo "[gpu_up] End it first with 'uv run ic-vast destroy', then run this again." >&2
-  exit 1
-fi
+# Refuses if the last rented instance still exists on vast.ai (end it with `ic-vast destroy`);
+# one destroyed in the vast.ai console is noticed and forgotten. Blocks until the instance is
+# ready, writes the ssh alias bluedot-vast, then starts the script detached with its log in
+# $REMOTE_LOGS.
+uv run ic-vast rent --script scripts/vm/serve_vllm.sh "$@"
 
-# A tunnel left over from an earlier session would point at the old instance.
+# A tunnel left over from an earlier session would point at the old instance. Closed only now,
+# after the rent, so a refused rent leaves a working tunnel alone.
 # pkill exits 1 when nothing matched, which is fine; anything else is a real error.
 pkill -f "[l]ocalhost:$PORT bluedot-vast" || [[ $? -eq 1 ]]
-
-# Blocks until the instance is ready, writes the ssh alias bluedot-vast, then starts the
-# script detached with its log in $REMOTE_LOGS.
-uv run ic-vast rent --script scripts/vm/serve_vllm.sh "$@"
 
 ssh -f -N -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 \
   -L "$PORT:localhost:$PORT" bluedot-vast

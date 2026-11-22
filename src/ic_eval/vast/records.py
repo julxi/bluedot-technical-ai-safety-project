@@ -131,7 +131,9 @@ class End(_Record):
     schema_version: int
     instance_id: int
     ended_at: float
-    reason: Literal["destroyed", "unreachable"]  # unreachable: the timer or the host ended it
+    # destroyed: by `ic-vast destroy`. unreachable: `ic-vast destroy` found it ended already (timer
+    # or host). gone: `ic-vast rent` found it missing on vast.ai (e.g. destroyed in the console).
+    reason: Literal["destroyed", "unreachable", "gone"]
     watchdog_starts: int | None  # >1 means the container restarted (watchdog restarts with it)
     detail: str | None
 

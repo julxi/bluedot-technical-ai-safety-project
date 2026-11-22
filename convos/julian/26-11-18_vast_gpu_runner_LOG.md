@@ -431,3 +431,25 @@ C: (transcribed from chat) I'd also like to distinguish the scripts between vm s
 Moved `scripts/serve_vllm.sh` → `scripts/vm/serve_vllm.sh` and `scripts/gpu_up.sh` → `scripts/laptop/gpu_up.sh` (plain `mv`, no git operation; git will show the tracked `serve_vllm.sh` as deleted plus a new untracked file until Julian stages the move). Updated: the usage comments in both scripts, `gpu_up.sh`'s repo-root `cd` (now `../..`) and its `--script` path, the `ic-vast` docstrings in `cli.py`, the README index, both affected SUMMARYs, and a convention paragraph in `docs/CODING.md` §Rented vast.ai GPUs. Older LOG entries keep the old paths (append-only). [verified: `bash -n` on both scripts; ruff clean on `cli.py`]
 
 The remote log name is unchanged (`serve_vllm_<timestamp>.log`, from the script's file stem), so `gpu_up.sh`'s log checks still match.
+
+---
+
+C: (transcribed from chat) If I run `bash scripts/laptop/gpu_up.sh` it checks some `json` in scratch. That is a bit annoying. I often destroy vastai instances over the vastai console and then I have to remember to delete something in scratch. Can this be fixed?
+
+---
+
+26-11-22, Claude Opus 5.5 — *rent forgets an instance destroyed in the console*; context: read README, this topic's SUMMARY, `gpu_up.sh`, `cli.py` (rent, destroy), `market.py`, `records.py`, `model.py`'s use of records
+
+Change: the check moved from `gpu_up.sh` into `ic-vast rent` (new `_forget_instance_if_gone()` in `cli.py`, called after the CLI version check, skipped under `--dry_run`). If `scratch/vast_current_instance.json` exists, rent asks vast.ai (`show_instance`):
+- Instance gone (console destroy, `vastai destroy`, timer, host): appends an `End` record with the new reason `"gone"` to `rentals.jsonl`, deletes the scratch file, rents as usual.
+- Instance still exists, in any status (a stopped one still bills for disk): refuses, naming its status and `ic-vast destroy`. This is the old behaviour of `gpu_up.sh`; plain `ic-vast rent` had no such check before and silently overwrote the record.
+
+Why record an End rather than just deleting the file: the session's end would otherwise be missing from the history. `End` records are not read by the host model (`model.py` only uses `Attempt`), so the new reason value changes nothing there; it is a new Literal value, and old records still parse [concluded: `End` appears only in type hints in `model.py`].
+
+`gpu_up.sh`: its own check is removed, and the leftover-tunnel `pkill` now runs after the rent, so a refused rent no longer closes a working tunnel to the still-alive instance.
+
+Checks:
+- [verified: `uv run pytest tests/vast`, 49 passed, 26-11-22] new `tests/vast/test_stale_instance.py` (gone → End recorded and file removed; existing instance → refusal, nothing written; no file → vast.ai not asked).
+- [verified: live read-only call 26-11-22] `show_instance(61848825)` (the instance of the 26-11-21 sync test, since destroyed) returns `None`, the case the new code treats as gone.
+- [verified: live read-only call 26-11-22] the record currently in scratch, instance 62015437 (host 500527), is gone from vast.ai: Julian's exact case. I left it alone; the next rent will record and clear it.
+- ruff check/format clean; `bash -n` on `gpu_up.sh`. Not run end to end (that rents a machine).

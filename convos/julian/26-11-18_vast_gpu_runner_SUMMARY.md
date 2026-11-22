@@ -1,6 +1,6 @@
 # SUMMARY: vast.ai GPU launcher `ic-vast` (port of the SPD repo's `spd-vast`)
 
-**Last updated:** 26-11-22 (`scripts/laptop/gpu_up.sh` added: rent + vLLM + tunnel in one command, untested; `ic-vast sync` verified 26-11-21; watchdog restart fix untested)
+**Last updated:** 26-11-22 (`ic-vast rent` forgets an instance destroyed in the console; `scripts/laptop/gpu_up.sh` added, untested end to end; `ic-vast sync` verified 26-11-21; watchdog restart fix untested)
 
 Julian asked to set up vast.ai GPU rentals here the way his other project, `/home/jx/projects/targeted-parameter-decomposition` ("the SPD repo"), does them, adopt the relevant part of that repo's `docs/CODING.md`, and ask many questions first. The questions, Julian's `C:` answers and the plan are in the LOG.
 
@@ -40,7 +40,8 @@ Julian asked to set up vast.ai GPU rentals here the way his other project, `/hom
 
 ## One-command GPU session (26-11-22)
 
-- `bash scripts/laptop/gpu_up.sh [rent options]`: refuses while an instance is still recorded as active, rents with `--script scripts/vm/serve_vllm.sh`, opens the 8000 tunnel, waits for `/health` (stops early if the serve script exits). End with `uv run ic-vast destroy`. Syntax-checked only; not yet run on a real rental. LOG entry *scripts/gpu_up.sh*.
+- **Leftover instance record:** `ic-vast rent` checks `scratch/vast_current_instance.json` against vast.ai. If the instance is gone (destroyed in the vast.ai console, by its timer or host), it records an `End` with reason `gone` in `rentals.jsonl`, deletes the file and rents. If the instance still exists in any status, it refuses until `ic-vast destroy`. Added at Julian's request so console destroys need no manual cleanup. [verified: unit tests; `show_instance` on a destroyed instance returns None, live 26-11-22] LOG entry *rent forgets an instance destroyed in the console*.
+- `bash scripts/laptop/gpu_up.sh [rent options]`: rent refuses while the last instance still exists (see above), rents with `--script scripts/vm/serve_vllm.sh`, opens the 8000 tunnel, waits for `/health` (stops early if the serve script exits). End with `uv run ic-vast destroy`. Syntax-checked only; not yet run on a real rental. LOG entry *scripts/gpu_up.sh*.
 
 ## Next
 

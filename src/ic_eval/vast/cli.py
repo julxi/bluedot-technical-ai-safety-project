@@ -45,6 +45,7 @@ from ic_eval.vast.market import (
     destroy_instance,
     find_offer,
     search_offers,
+    show_instance,
 )
 from ic_eval.vast.model import (
     Posterior,
@@ -222,6 +223,8 @@ def rent(
     if script is not None:
         check_script(script)
     log(f"vastai CLI {check_cli()}")
+    if not dry_run:
+        _forget_instance_if_gone()
     identity_file = ssh_identity_file()
     git_state = local_git_state()  # checked before renting, so an unpushed commit costs nothing
     layers = fetch_layers(machine.image)
@@ -748,6 +751,37 @@ def _empty_pull(layers: list[Layer]) -> PullStats:
         speed_mb_s=None,
         unknown_layer_ids=[],
     )
+
+
+def _forget_instance_if_gone() -> None:
+    """Before renting: refuse while the recorded instance still exists; forget it if it is gone.
+
+    The record (CURRENT_INSTANCE_PATH) normally ends with `ic-vast destroy`. An instance destroyed
+    another way (vast.ai console, `vastai destroy`) leaves it behind; renting over it would lose
+    that session's end. So a missing instance gets its End record (reason 'gone') here. One that
+    still exists, in any status, may still be billing and is left to `ic-vast destroy`.
+    """
+    if not CURRENT_INSTANCE_PATH.exists():
+        return
+    instance_id = int(json.loads(CURRENT_INSTANCE_PATH.read_text())["instance_id"])
+    shown = show_instance(instance_id)
+    assert shown is None, (
+        f"Instance {instance_id} is still recorded as active and exists on vast.ai (status "
+        f"{shown['actual_status']!r}). End it with `uv run ic-vast destroy`, then rent again."
+    )
+    log(f"Instance {instance_id} is recorded as active but gone from vast.ai; recording its end")
+    append_record(
+        End(
+            kind="end",
+            schema_version=SCHEMA_VERSION,
+            instance_id=instance_id,
+            ended_at=time.time(),
+            reason="gone",
+            watchdog_starts=None,
+            detail="not found by `vastai show instance` when renting again",
+        )
+    )
+    CURRENT_INSTANCE_PATH.unlink()
 
 
 def _remember_instance(instance_id: int, offer: dict[str, Any]) -> None:
