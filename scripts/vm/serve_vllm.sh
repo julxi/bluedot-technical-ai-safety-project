@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Start a vLLM server for Olmo 3 on a rented GPU. Inspect on the laptop reaches it through an
 # ssh tunnel: ssh -N -L 8000:localhost:8000 bluedot-vast
-# Usage (on the instance, from /root/bluedot): bash scripts/serve_vllm.sh [model] [revision]
+# Usage (on the instance, from /root/bluedot): bash scripts/vm/serve_vllm.sh [model] [revision]
 set -euo pipefail
 
 # vLLM and its Python packages live in this venv in the vastai/vllm image.

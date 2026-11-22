@@ -400,3 +400,34 @@ C: (transcribed from chat) Yes please
   - `ic-vast sync` with nothing to delete: fetch + rsync ran (21 KB sent), `scripts/serve_vllm.sh` arrived, and the instance's `git status --short` matched the laptop's exactly (HEAD `a9636c0`).
   - With a probe file `zz probe.txt` (a space in the name) placed on the instance: the sync stopped, printed `/root/bluedot/zz probe.txt` as the one path it would delete, and exited 1 without syncing. The probe file was removed by hand afterwards.
   - `--allow_delete` itself was not run live; it only skips the assert.
+
+---
+
+C: (transcribed from chat) I have stopped the machine. Can you write a script that spins up the machine and sets the tunnel?
+
+---
+
+26-11-22, Claude Opus 5.5 — *scripts/gpu_up.sh: rent, serve, tunnel in one command*; context: the InstrumentalEval harness topic (`convos/julian/26-11-21_instrumental_eval_harness_LOG.md`), where Julian ran vLLM on instance 62001064
+
+`scripts/gpu_up.sh [ic-vast rent options]` on the laptop:
+1. Refuses to start while `scratch/vast_current_instance.json` exists, because renting again would overwrite it and the old session would never be recorded (and might still be billing). Use `ic-vast destroy` first.
+2. Kills a leftover tunnel on port 8000 (`pkill -f "[l]ocalhost:8000 bluedot-vast"`; exit 1 = none found is accepted, other errors fail).
+3. `uv run ic-vast rent --script scripts/serve_vllm.sh "$@"`, which blocks until the instance is ready and starts vLLM detached.
+4. Opens the tunnel with `ssh -f -N -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -L 8000:localhost:8000 bluedot-vast`.
+5. Polls `localhost:8000/health` every 10 s for up to 15 min. It stops early with the end of the server log if ic-vast's wrapper line "[ic-vast] script exited" appears in `/root/bluedot/logs/remote/serve_vllm_*.log`, and prints the log on timeout too.
+
+Checks: `bash -n` passes; shellcheck is not installed; not run end to end, since that rents a machine [assumed: works; needs one real rental]. My attempt to run it locally to test the guard in step 1 was blocked by the permission system, correctly, because a failing guard would have rented.
+
+Open: at the time of writing, `scratch/vast_current_instance.json` still lists instance 62001064, although Julian says he stopped the machine. If he stopped it outside `ic-vast destroy`, the rental is not recorded in `rentals.jsonl` and a stopped vast.ai instance still bills for disk.
+
+---
+
+C: (transcribed from chat) I'd also like to distinguish the scripts between vm scripts and laptop scripts
+
+---
+
+26-11-22, Claude Opus 5.5 — *scripts split into scripts/vm/ and scripts/laptop/*
+
+Moved `scripts/serve_vllm.sh` → `scripts/vm/serve_vllm.sh` and `scripts/gpu_up.sh` → `scripts/laptop/gpu_up.sh` (plain `mv`, no git operation; git will show the tracked `serve_vllm.sh` as deleted plus a new untracked file until Julian stages the move). Updated: the usage comments in both scripts, `gpu_up.sh`'s repo-root `cd` (now `../..`) and its `--script` path, the `ic-vast` docstrings in `cli.py`, the README index, both affected SUMMARYs, and a convention paragraph in `docs/CODING.md` §Rented vast.ai GPUs. Older LOG entries keep the old paths (append-only). [verified: `bash -n` on both scripts; ruff clean on `cli.py`]
+
+The remote log name is unchanged (`serve_vllm_<timestamp>.log`, from the script's file stem), so `gpu_up.sh`'s log checks still match.

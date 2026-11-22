@@ -7,7 +7,7 @@
     ic-vast rent --mode exploit           # lowest expected cost, no exploration
     ic-vast rent --config h200 --hours 4  # src/ic_eval/vast/configs/h200.yaml, 4 h session
     ic-vast rent --offer_id 123           # this offer, no choice, no re-rent
-    ic-vast rent --script scripts/x.sh    # ... then run that repo script on the instance
+    ic-vast rent --script scripts/vm/x.sh # ... then run that repo script on the instance
     ic-vast rent --dry_run                # show the choice, rent nothing
     ic-vast timer [2h|90m|off]            # show or change the self-destruct timer
     ic-vast sync [--allow_delete]         # upload the working tree again (HEAD must be pushed)
@@ -184,8 +184,9 @@ def rent(
     max_attempts (configs/policy.yaml).
 
     Args:
-        script: Repo-relative bash script (.sh) to run on the instance once ready, detached, in a
-            login shell from /root/bluedot; output in /root/bluedot/logs/remote/.
+        script: Repo-relative bash script (.sh, by convention in scripts/vm/) to run on the
+            instance once ready, detached, in a login shell from /root/bluedot; output in
+            /root/bluedot/logs/remote/.
         config: Machine config: a short name ('h200' -> configs/h200.yaml) or a YAML path.
         mode: How to choose among offers. exploit: lowest expected cost. balance (default):
             mostly exploit, now and then try a host the model knows little about. explore: try

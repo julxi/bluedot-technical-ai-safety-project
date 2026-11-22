@@ -1,6 +1,6 @@
 # SUMMARY: vast.ai GPU launcher `ic-vast` (port of the SPD repo's `spd-vast`)
 
-**Last updated:** 26-11-21 (`ic-vast sync` added and verified live; launcher rebuilt as a package with Bayesian host choice, see the host-selection topic; timer self-destroy verified; watchdog restart fix untested)
+**Last updated:** 26-11-22 (`scripts/laptop/gpu_up.sh` added: rent + vLLM + tunnel in one command, untested; `ic-vast sync` verified 26-11-21; watchdog restart fix untested)
 
 Julian asked to set up vast.ai GPU rentals here the way his other project, `/home/jx/projects/targeted-parameter-decomposition` ("the SPD repo"), does them, adopt the relevant part of that repo's `docs/CODING.md`, and ask many questions first. The questions, Julian's `C:` answers and the plan are in the LOG.
 
@@ -37,6 +37,10 @@ Julian asked to set up vast.ai GPU rentals here the way his other project, `/hom
 - [verified: one test] `ic-vast timer` show, off, and `2m` all work. The instance destroyed itself within 40 s of the deadline.
 - **Open:** the container restarted on its own 27 s after it was ready, and that killed the watchdog. Cause unknown. **Fix, untested:** the watchdog is now also started from `/root/onstart.sh`, which vast.ai runs on every container start. Verifying it needs one more short rental, e.g. with `vastai reboot instance`.
 - Both test rentals cost about $0.20-0.25 [assumed: from durations].
+
+## One-command GPU session (26-11-22)
+
+- `bash scripts/laptop/gpu_up.sh [rent options]`: refuses while an instance is still recorded as active, rents with `--script scripts/vm/serve_vllm.sh`, opens the 8000 tunnel, waits for `/health` (stops early if the serve script exits). End with `uv run ic-vast destroy`. Syntax-checked only; not yet run on a real rental. LOG entry *scripts/gpu_up.sh*.
 
 ## Next
 
