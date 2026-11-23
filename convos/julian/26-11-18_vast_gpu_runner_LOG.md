@@ -453,3 +453,9 @@ Checks:
 - [verified: live read-only call 26-11-22] `show_instance(61848825)` (the instance of the 26-11-21 sync test, since destroyed) returns `None`, the case the new code treats as gone.
 - [verified: live read-only call 26-11-22] the record currently in scratch, instance 62015437 (host 500527), is gone from vast.ai: Julian's exact case. I left it alone; the next rent will record and clear it.
 - ruff check/format clean; `bash -n` on `gpu_up.sh`. Not run end to end (that rents a machine).
+
+---
+
+26-11-22, Claude Opus 5.5 — *gpu_up.sh looked hung: slow weight download*; context: Julian reported `gpu_up.sh` sitting at "waiting for vLLM (up to 900s)"
+
+Instance 62031213, host 500527 (the host of the earlier instance 62015437 too). [verified: the server log, read over ssh] `serve_vllm.sh` started at 20:04:13 UTC; the weight download for allenai/Olmo-3-7B-Think (13.59 GiB) took 287 s; torch.compile and CUDA graph capture took about 20 s; the API server was up at 20:09:52 and `localhost:8000/health` answered 200 through the tunnel. So vLLM took about 5 min 40 s to start, not hung; the earlier first start (26-11-21) took 2 min 40 s. The 900 s timeout in `gpu_up.sh` still covers it. The weights are downloaded fresh in each new container, even on a host used before.

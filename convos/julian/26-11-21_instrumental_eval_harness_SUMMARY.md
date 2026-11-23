@@ -1,6 +1,6 @@
 # SUMMARY: Our own InstrumentalEval harness on Inspect
 
-**Last updated:** 26-11-22 (steps 1, 3 and 4 done: data, parser checks, task with category filter, judge-free scorer, tests; step 5 (all 76 on the GPU) next)
+**Last updated:** 26-11-22 (steps 1, 3 and 4 done; step 5 under way: throughput sweep on the A6000 done, `--max-connections 32` with the bf16 cache best; 8-bit cache tested, not worth it)
 
 Julian, with vLLM now serving Olmo 3 7B Think with `--reasoning-parser olmo3` on a rented GPU, asked for instructions to implement our own version of the InstrumentalEval benchmark. He writes the code; the LOG holds the guide (entry *step-by-step guide: our own InstrumentalEval on Inspect*).
 
@@ -25,6 +25,14 @@ Julian, with vLLM now serving Olmo 3 7B Think with `--reasoning-parser olmo3` on
 - Test offline with `inspect score <log> --scorer src/ic_eval/instrumental/scorer.py@generation_record --output-file <new file>`; it prompts before overwriting an existing output file.
 - No extra asserts for `</think>` in the answer or `stop` without thinking [decided: Julian]: both cases already come out as `stop_reason == "stop"` with `finished == False`. Check for that combination after step 5.
 - **Step 4.4 done:** category filter in `load_samples(category)` (`-T category=…`, `ValueError` listing valid names); tests in `tests/instrumental/` (15, incl. the two real outputs as a fixture; a seeded `message.text` defect fails 3 of them) [verified: 61/61 pass, 26-11-22]. `make check` still fails on Julian's scratch `log_test.py` in the package. A `model_length` stop reason would crash the scorer; only reachable if `max_tokens` goes to 32768. LOG entry *step 4.4 tests written*.
+
+## Step 5: running at scale
+
+- Inspect 0.3.291 defaults to adaptive concurrency (starts at 20, grows to at most 100, shrinks only on 429s, which vLLM never sends); `--max-connections N` fixes it at N [verified: source read]. The HTTP request timeout is 600 s; one sequence ran at about 38 tokens/s (last real run, 2 at once), so a 16,000-token reply can exceed it under load and be retried from zero. Use `-M client_timeout=3600` [assumed: not seen to trigger yet].
+- **Throughput sweep on the RTX A6000** [verified: one run per setting, 26-11-22; 152 requests = 76 tasks × 2 epochs]: `--max-connections 32` gave 442 tok/s end to end (501 in the saturated phase); 64 gave 404 (536 saturated), because the KV cache (116,346 tokens) filled, vLLM re-queued started requests and the tail doubled (368 s vs 162 s). Julian's 20-request shutdown run: 286. About 32 replies fit in the cache at these lengths, so the cache, not Inspect, is the limit. Use `--max-connections 32 -M client_timeout=3600` and one big run (the tail costs 2–3 min per run). More throughput needs more memory: a bigger GPU, or `--gpu-memory-utilization 0.95` (≈ +9% cache, untested).
+- **8-bit KV cache on the A6000** [verified: 26-11-22, one run]: FP8 fails to start (needs compute capability 8.9+, i.e. L40S/4090/H100). `int8_per_token_head` works, doubles the cache (225,475 tokens) and ran 64 requests without queueing, but on a slower attention backend (Triton instead of FlashAttention): 591 vs 503 tok/s while the batch was full, 433 vs 442 end to end (long tail). Not worth the numerics change [concluded]; stay with bf16. All replies finished and per-category median lengths stayed inside the bf16 run-to-run spread. LOG entry *8-bit KV cache on the A6000: FP8 unsupported, INT8 no gain*.
+- Reply lengths [verified: same runs]: medians about 1,500–2,500 tokens per category, longest 9,391 (INT8 run; 7,312 in bf16, `aligned-02` the slowest in both bf16 runs); none near `max_tokens` 16000. Per-reply speed about 16 tok/s at 32 connections, so a full 16,000-token reply would need about 17 min: past the 600 s default timeout.
+- Analysis: `scripts/laptop/vllm_throughput.py` (an Inspect log plus a copy of the vLLM log → tokens/s, queue, cache, tail). Details: LOG entries *step 5: full shutdown run and filling the GPU* and *throughput sweep: 32 connections is the A6000 optimum*.
 
 ## Later
 

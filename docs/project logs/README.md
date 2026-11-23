@@ -1,0 +1,1 @@
+This is a human zone. Nothing here should be written by an agent.

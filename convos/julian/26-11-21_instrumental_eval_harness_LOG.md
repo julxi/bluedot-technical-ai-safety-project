@@ -342,3 +342,126 @@ Added `tests/instrumental/test_scorer.py` (10 tests: `split_reply` on plain stri
 Findings:
 - `make check` fails on `basedpyright` in Julian's scratch file `src/ic_eval/instrumental/log_test.py` (`log.samples` may be None). It and `test_completion.py` are exploration scripts inside the package; `log_test.py` reads a log at import. Suggested moving both to `scratch/`.
 - Stop reason `model_length` (prompt + reply reach `--max-model-len 32768`) would crash the scorer. Impossible at `max_tokens` 16000 with prompts of about 400 tokens; decide how to count it if `max_tokens` goes to 32768.
+
+---
+
+C: (transcribed from chat) I'm testing the inspect build so far. I have run this: `inspect eval tasks/instrumental_eval.py --model openai-api/vllm/olmo -T category=shutdown --limit 2` I want to run now the whole shutdown category, and I also want to know how I can utilize the gpu as much as possible
+
+---
+
+26-11-22, Claude Opus 5.5 — *step 5: full shutdown run and filling the GPU*; I have read README, this topic's SUMMARY and step 5/6 of the guide, `serve_vllm.sh`, `gpu_up.sh`, the task file, the last saved logs, and Inspect 0.3.291's concurrency and HTTP timeout code. I did not query the server (Julian prefers instructions).
+
+**Whole shutdown category:** drop `--limit`. That is 20 samples, one each.
+
+**What Inspect does by default** [verified: source read, inspect-ai 0.3.291, `util/_concurrency.py`, `_util/http_defaults_httpx2.py`]:
+- Without `--max-connections`, concurrency is *adaptive*: starts at 20, may grow to 100, and only shrinks on rate-limit errors (429). vLLM never sends 429; it queues requests itself. So the 20 shutdown samples all go out at once already. Setting `--max-connections N` turns adaptive off and fixes the limit at N.
+- HTTP request timeout: 600 s (env `INSPECT_HTTP_REQUEST_TIMEOUT`, or `-M client_timeout=…`). Our last real run (`logs/2026-11-22T20-16-00…`, 2 samples at once) generated 2,056 tokens in 54.7 s, about 38 tokens/s per sequence. A reply that uses all 16,000 tokens therefore needs about 7 min alone, and longer when many sequences share the GPU. Past 600 s the request is cancelled, vLLM drops the work, and Inspect retries from zero. [assumed: not seen happen yet; the 600 s budget applies to the non-streamed request as a whole] Recommended: `-M client_timeout=3600` on every real run.
+
+**What limits GPU use here:** not Inspect, but the number of requests. vLLM runs all requests in flight as one batch; each decoding step reads the weights once for the whole batch, so total tokens/s grows with batch size until either compute or KV-cache memory runs out. 20 requests is a small batch for an A6000 with a 7B model. And the run lasts as long as its longest reply, so near the end only a few long replies are running and the GPU idles (long tail).
+
+Ways to fill it, most useful first:
+1. **More samples in one run:** all 76 tasks (drop `-T category`) and/or `--epochs N` (N samples per task; needed anyway for error bars). 76 × 5 = 380 requests keeps the batch full and spreads the long tail over many samples.
+2. **Let enough requests in:** with hundreds of samples, adaptive grows only to 100. Set `--max-connections` to vLLM's capacity (point 4) or a bit above; vLLM queues the excess.
+3. **More KV cache on the server:** `--gpu-memory-utilization 0.90` → `0.95` in `serve_vllm.sh` gives about 2.4 GB more for the cache. Small gain; optional.
+4. **Measure the capacity:** vLLM prints it at startup. On the instance: `ssh bluedot-vast "grep -E 'KV cache size|Maximum concurrency' /root/bluedot/logs/remote/serve_vllm_*.log"`. "Maximum concurrency for 32,768 tokens per request: X" is the worst case; real replies are shorter, so more fit.
+
+**What to watch during the run:** `ssh bluedot-vast "tail -f /root/bluedot/logs/remote/serve_vllm_*.log | grep --line-buffered 'throughput'"`. vLLM's periodic line shows `Running: … reqs, Waiting: … reqs, GPU KV cache usage: …%` and `Avg generation throughput`. Reading it: `Waiting` > 0 with KV usage near 100% means the GPU is full (more connections won't help); `Running` equal to your connection limit with low KV usage means raise `--max-connections`. `ssh bluedot-vast nvidia-smi` shows compute use. [assumed: the log line format of vLLM 0.34.0; not looked at in our logs yet]
+
+Commands given:
+```bash
+# whole shutdown category (20 samples)
+inspect eval tasks/instrumental_eval.py --model openai-api/vllm/olmo -T category=shutdown -M client_timeout=3600
+
+# step-5 run that fills the GPU: all 76 tasks, several samples each
+inspect eval tasks/instrumental_eval.py --model openai-api/vllm/olmo --epochs 5 --max-connections 128 -M client_timeout=3600
+```
+`--epochs 5` and `--max-connections 128` are starting guesses, to be adjusted from point 4 and the log line. [assumed] Running epochs before the settings in "Before the real data" are decided (max_tokens, temperature) means the run is a throughput measurement, not data that counts.
+
+---
+
+C: (transcribed from chat) Can you run some example inspects to see what are the best settings to get as much throughput as possible? You can use the vm
+
+---
+
+26-11-22, Claude Opus 5.5 — *throughput sweep: 32 connections is the A6000 optimum*; context: the entry above (*step 5: full shutdown run and filling the GPU*), the running vLLM server on instance 62031213 (RTX A6000, vLLM 0.34.0, `--gpu-memory-utilization 0.90`, `--max-model-len 32768`), Julian's own full-shutdown run of 21:58 UTC.
+
+**Setup.** Same 152 requests in each run (all 76 tasks × `--epochs 2`), the task's real settings (`max_tokens` 16000, temperature 0.6, top_p 0.95), `-M client_timeout=3600`, only `--max-connections` varied. Logs in `logs/throughput_26-11-22/` (gitignored), tagged `c32`/`c64`. End-to-end tokens/s = summed output tokens / Inspect wall time; vLLM's 10 s log lines give the batch size, queue and KV-cache use. Analysis script: `scripts/laptop/vllm_throughput.py` (new; usage in its docstring). The server was not restarted or changed.
+
+**Server capacity** [verified: vLLM startup log]: KV cache 25.46 GiB = 116,346 tokens ("Maximum concurrency for 32,768 tokens per request: 3.55x"); vLLM keeps 3.08 GiB of the card free at 0.90.
+
+**Results** [verified: one run per setting, 26-11-22]
+
+| run | requests | max_connections | wall | output tokens | end-to-end | saturated-phase gen | long tail |
+|---|---|---|---|---|---|---|---|
+| Julian's shutdown run | 20 | default (adaptive, starts at 20) | 131 s | 37,437 | 286 tok/s | about 460 tok/s | 83 s |
+| c32 | 152 | 32 | 687 s | 303,554 | **442 tok/s** | 501 tok/s | 162 s |
+| c64 | 152 | 64 | 774 s | 312,985 | 404 tok/s | 536 tok/s | 368 s |
+
+("Saturated phase": from the start until the queue stops being full; "long tail": the rest, when the batch only drains. All 152 replies in both runs ended with `stop`; no errors, no retries.)
+
+What happened:
+- **c32:** 32 requests ran nearly all the time; KV cache use averaged 79% and touched 95–99% in 5 of 69 intervals, briefly queueing up to 4. The cache, not compute, is the ceiling.
+- **c64:** 64 requests started at once and ran at 650–890 tok/s for about 30 s while replies were short; then the cache hit 98–99% and stayed there (48 of 77 intervals ≥ 95%). vLLM pushed started requests back into the queue (running fell to 28–46, up to 36 waiting) and recomputed their prompts when re-admitting them (prompt throughput reappears mid-run). The saturated phase was only about 7% faster than c32 (536 vs 501), and the re-queued requests finished late, so the tail more than doubled (368 s vs 162 s) and the run was slower end to end.
+- So on this GPU about 32 replies fit in the cache at these lengths (116k tokens / ~3,500 tokens per reply in flight). `--max-connections 32` is the setting; more only moves work into the tail. [concluded: from the mechanism visible in vLLM's log; the 442 vs 404 difference alone is one run each and partly due to different longest replies, 6,524 vs 7,312 tokens]
+
+**Reply lengths** (c32 run, tokens): per category, median / max: aligned 1,521 / 6,524; copies 1,879 / 2,733; deceptive 2,530 / 3,967; hacking 1,979 / 3,940; hiding 1,950 / 4,584; shutdown 1,641 / 2,508. The slowest sample in both runs was `aligned-02` (6,524 and 7,312 tokens, 425 s and 476 s). Nothing came near `max_tokens` 16000.
+
+**Per-reply speed and the timeout:** median 15.9 tok/s per reply at c32, 9.2 at c64 (minimum 4.1). A reply using all 16,000 tokens would take about 17 min at c32, past Inspect's default 600 s timeout; `-M client_timeout=3600` is needed [concluded].
+
+**Recommendations for the A6000 (`gpu_up.sh` default):**
+1. `--max-connections 32 -M client_timeout=3600`.
+2. One big run rather than several small ones: the tail costs about 2–3 min per run whatever its size (162 s at 152 requests). E.g. all 76 × `--epochs 5` (380 requests, about 750k tokens at ~2,000 each) should take about 25–30 min at ~500 tok/s, about $0.18 at $0.376/h [assumed: extrapolated from c32].
+3. More throughput needs more KV memory, not more connections. Options, none tested:
+   - `--gpu-memory-utilization 0.95` in `serve_vllm.sh`: +2.2 GiB, about +9% cache. Small.
+   - A GPU with more memory (A100 80GB, H100): far more cache and compute; wall time drops, cost per token roughly similar [assumed].
+   - FP8 KV cache (`--kv-cache-dtype fp8`): roughly doubles the cache but changes the model's numerics, so not for data that counts without a comparison first; support on Ampere (A6000) not checked.
+
+**Not done:** the 0.95 test (restarting the server with about 35 min left on the self-destruct timer, for a gain of at most ~9% cache). No second run per setting.
+
+---
+
+C: (transcribed from chat) I think FP8 KV cache sounds interesting. I would bank on the fact that a model's overall behaviour doesn't depend hughely on this
+
+---
+
+26-11-22, Claude Opus 5.5 — *FP8 KV cache: plausible, but measure it once*; context: the throughput sweep above; checked `vllm serve --help=kv-cache-dtype` on the instance (vLLM 0.34.0 offers `fp8`/`fp8_e4m3`, `fp8_e5m2`, `fp8_per_token_head` and others).
+
+Mostly agree, with conditions:
+- Plausible that the effect is small: 8-bit KV caches are usually reported to cost little on benchmarks, and Olmo 3 normalises queries and keys (QK-norm), which keeps key values in a range FP8 handles well. [assumed: no source read today; general knowledge]
+- Where it can still matter: errors in the cache compound over long reasoning traces (our replies run 1,500–7,300 tokens), and the default `fp8` uses an uncalibrated scale of 1.0. `fp8_per_token_head` scales per token and head and should be closer to bf16. [assumed: from the option name and help text; not read in vLLM's code]
+- Detectability cuts both ways: one sample per task over 76 tasks has a standard error of about 5.7 points (step-5 guide), so a shift of a point or two would be invisible in any single comparison. Fine for comparisons inside the study if every checkpoint is served the same way and the setting is recorded; a confound when comparing with the published paper, which (we assume) ran bf16.
+- Practical unknowns: whether vLLM's attention backend on Ampere (A6000, compute capability 8.6) supports an FP8 cache without falling back to something slow, and how much faster it is. Halving the cache per token should fit about 64 replies instead of about 32; the c64 run reached 650–890 tok/s while the cache still had room, so the gain could be large, minus any dequantisation cost.
+
+Proposed test (~15 min of GPU): restart vLLM with `--kv-cache-dtype fp8` (or `fp8_per_token_head`), check the startup log for the new cache size and the chosen attention backend, then the c64 run (152 requests) and the same analysis. Cheap quality proxies before the judge exists: reply-length distribution per category and `stop` rate against the bf16 runs. After step 6 (judge): bf16 vs FP8 rates on the same tasks with several epochs. Timer had 27 min left at 22:36 UTC, so either extend it or test on the next rental; asked Julian.
+
+---
+
+C: (transcribed from chat) Yeah, can you test this (and you can extend the timer)
+
+---
+
+26-11-22, Claude Opus 5.5 — *8-bit KV cache on the A6000: FP8 unsupported, INT8 no gain*; context: the two entries above; same instance 62031213 (RTX A6000), vLLM 0.34.0.
+
+Timer extended with `ic-vast timer --duration 50m` at 22:38 UTC (to 23:28 UTC). Server stopped and restarted twice by hand with the same arguments as `serve_vllm.sh` plus `--kv-cache-dtype …`; logs on the instance in `/root/bluedot/logs/remote/{fp8test,int8test}_vllm.log`.
+
+**FP8 is not possible on this card** [verified: startup error 22:39 UTC]: `--kv-cache-dtype fp8_per_token_head` picks the TRITON_ATTN backend (the only candidate with a quantized cache) and fails with "FP8 KV cache is not supported by the Triton attention backend on NVIDIA RTX A6000 (compute capability 8.6); native FP8 (fp8e4nv) requires SM89+". FP8 needs an Ada or Hopper card (L40S, RTX 4090, H100).
+
+**INT8 instead** (`--kv-cache-dtype int8_per_token_head`, per-token-and-head scales computed at runtime): starts fine, also on TRITON_ATTN (bf16 used FLASH_ATTN), same 25.46 GiB of cache memory, **225,475 tokens = 1.94× the bf16 cache**, "Maximum concurrency for 32,768 tokens per request: 6.88x".
+
+Same 152 requests at 64 connections (log tagged `c64,int8` in `logs/throughput_26-11-22/`) [verified: one run, 26-11-22]:
+
+| run | end-to-end | gen while the batch was full | queueing | long tail | longest reply |
+|---|---|---|---|---|---|
+| bf16, 32 conns | 442 tok/s | 503 tok/s (≥30 running) | max 4 waiting | 162 s | 6,524 |
+| bf16, 64 conns | 404 tok/s | cache full, re-queueing | max 36 waiting | 368 s | 7,312 |
+| INT8, 64 conns | 433 tok/s | 591 tok/s (≥60 running) | none | 302 s | 9,391 |
+
+- The INT8 cache did its job: 64 requests ran the whole time with no queueing, peak cache use 96%.
+- But each step is slower: with 64 running, INT8 gave 490–590 tok/s, while bf16 with 64 running and the cache not yet full gave 650–890 tok/s (first 30 s of the bf16 c64 run). The cause is probably the Triton backend plus dequantising the cache, rather than INT8 itself [assumed: not profiled].
+- Net: +18% while the batch is full (591 vs 503), no gain end to end in this run because of a long tail (one reply of 9,391 tokens, the longest seen so far). In a much bigger run, where the tail matters less, the gain would approach the +18% [assumed].
+- Quality proxies [verified: same runs]: all 152 replies finished (`stop`, score 1) in all three runs. Median reply length per category, INT8 vs bf16 c32 vs bf16 c64 (tokens): aligned 1,406 / 1,494 / 1,651; copies 1,876 / 1,861 / 1,772; deceptive 2,337 / 2,525 / 2,484; hacking 1,956 / 1,978 / 2,093; hiding 1,799 / 1,894 / 2,206; shutdown 1,587 / 1,628 / 1,724. The INT8 numbers sit inside the spread between the two bf16 runs. That rules out gross breakage only; it says nothing about the behaviour rates (needs the judge).
+- OUTDATED: the per-category medians in the entry *throughput sweep: 32 connections is the A6000 optimum* were upper medians (the middle element of the sorted list); the values here use `statistics.median`. Differences are at most 30 tokens.
+
+**Conclusion** [concluded]: on the A6000, an 8-bit cache is not worth it: at most ~18% more throughput, paid for with a numerics change that would have to be checked against bf16 once the judge exists. Stay with bf16 and `--max-connections 32`. If speed matters, the better route is a different GPU: an Ada/Hopper card (L40S, H100) supports FP8 natively and may run FP8 through a faster backend, and an 80 GB card gives a bigger bf16 cache without changing numerics. Not tested.
+
+**Server restored** [verified: 22:53 UTC]: the old bf16 log was renamed to `old_bf16_serve_vllm_261122_210413.log` (it ends with the wrapper's "script exited" line, which `gpu_up.sh` greps for), then `serve_vllm.sh` was relaunched with the same wrapper `ic-vast rent` uses; log `serve_vllm_261122_225242.log`. Up after about 40 s (weights cached on disk): `kv_cache_dtype=auto`, FLASH_ATTN, cache 116,929 tokens (116,346 at the first start; the small difference is from memory profiling). The timer still runs until 23:28 UTC.

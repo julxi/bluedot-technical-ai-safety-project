@@ -1,6 +1,6 @@
 # SUMMARY: RLVR side-effects and instrumental convergence (candidate project topic)
 
-**Last updated:** 26-11-18 (follow-up comments answered: Vast.ai prices, revised cost assumptions, Olmo 3 training stages, judge comparison, own harness proposed; still no model run; nothing decided yet)
+**Last updated:** 26-11-23 (framing decided by Julian: work on arXiv 2610.31624, no plain reproduction; otherwise as of 26-11-18: prices, Olmo 3 training stages, judge comparison, own harness proposed)
 
 Julian's idea: use the released training checkpoints of Ai2's Olmo 3 reasoning models to test whether reinforcement learning with verifiable rewards (RLVR) increases instrumental-convergence behaviour, measured with the InstrumentalEval benchmark from the reference paper (`papers/2502.12206v1_evaluating_the_paperclip_maximizer.md`). He asked for other ideas and for what is likely not checkable. Success criterion in his words: any result that helps understand instrumental convergence in LLMs; a re-run of the reference paper on another model is fine.
 
@@ -77,7 +77,7 @@ Not checkable with a student budget: causal attribution to correctness rewards, 
 
 - Source of the brainstorm text (a shared course project list would mean more people on the same idea).
 - Budget, deadline, hours per week, available API keys (no `.env` yet).
-- Whether the replication framing is the angle he wants.
+- Framing answered 26-11-22 [decided: Julian's C: comment in `convos/julian/26-11-22_bluedot_course_exercises_LOG.md`]: replicate and/or discuss arXiv 2610.31624; other findings welcome; no plain reproduction planned. Crux ranking and first test: that topic's SUMMARY.
 
 
 - LOG: `convos/julian/26-11-16_rlvr_instrumental_convergence_LOG.md` (entry title: *feasibility check, prior-work find, and project options for RLVR and instrumental convergence*)
