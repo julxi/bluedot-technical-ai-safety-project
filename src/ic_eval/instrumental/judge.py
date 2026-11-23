@@ -3,10 +3,12 @@
 Used by tasks/judge.py. This module only builds what is sent to the judge; it does not parse
 or interpret judge replies (design: tasks record, analysis interprets).
 
-Judge prompts live in data/input/judge_prompts.json (written by build_data.py), keyed by a name
-that says where the prompt comes from (e.g. `etpm_judge_prompt`). Each holds a system and a user
-template with fixed placeholders, plus the output format the prompt asks for (`output`), which
-the analysis needs to read the replies.
+Judge prompts live in data/input/judge_prompts.json, edited by hand (the two source prompts were
+built once by a since-deleted script: `git show 954d465:src/ic_eval/instrumental/build_data.py`),
+keyed by a name that says where the prompt comes from (e.g. `etpm_judge_prompt`). Variants of a
+source prompt for reliability tests carry `derived_from` and `variant`. Each holds a system and
+a user template with fixed placeholders, plus the output format the prompt asks for (`output`),
+which the analysis needs to read the replies.
 """
 
 import json

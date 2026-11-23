@@ -34,6 +34,7 @@ import json
 import re
 import shlex
 import subprocess
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -216,22 +217,32 @@ def open_tunnel() -> None:
     # pkill exits 1 when nothing matched, which is fine; anything else is a real error.
     killed = subprocess.run(["pkill", "-f", f"[l]ocalhost:{PORT} {SSH_HOST_ALIAS}"], check=False)
     assert killed.returncode in (0, 1), f"pkill failed with {killed.returncode}"
-    subprocess.run(
-        [
-            "ssh",
-            *SSH_OPTS,
-            "-f",
-            "-N",
-            "-o",
-            "ExitOnForwardFailure=yes",
-            "-o",
-            "ServerAliveInterval=30",
-            "-L",
-            f"{PORT}:localhost:{PORT}",
-            SSH_HOST_ALIAS,
-        ],
-        check=True,
-    )
+    # `ssh -f` forks into the background and would keep the caller's stdout and stderr open:
+    # `ic-serve up | tee x` then never ended (seen 26-11-23: a piped switch only "finished"
+    # when the next switch killed the tunnel). So no inherited streams; ssh's own error
+    # messages go to a temporary file, shown if it fails.
+    with tempfile.TemporaryFile(mode="w+") as errors:
+        result = subprocess.run(
+            [
+                "ssh",
+                *SSH_OPTS,
+                "-f",
+                "-N",
+                "-o",
+                "ExitOnForwardFailure=yes",
+                "-o",
+                "ServerAliveInterval=30",
+                "-L",
+                f"{PORT}:localhost:{PORT}",
+                SSH_HOST_ALIAS,
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=errors,
+            check=False,
+        )
+        errors.seek(0)
+        assert result.returncode == 0, f"ssh tunnel failed ({result.returncode}): {errors.read()}"
     log(f"tunnel open: localhost:{PORT} -> {SSH_HOST_ALIAS}:{PORT}")
 
 

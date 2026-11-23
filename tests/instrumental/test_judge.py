@@ -4,6 +4,7 @@ from conftest.py."""
 
 import copy
 import json
+import re
 
 import pytest
 from inspect_ai.log import EvalLog
@@ -17,7 +18,36 @@ with open(DATA_JUDGE_PROMPTS, encoding="utf-8") as f:
 
 
 def test_the_two_source_prompts_exist() -> None:
-    assert PROMPT_NAMES == ["etpm_judge_prompt", "qic_judge_prompt"]
+    assert {"etpm_judge_prompt", "qic_judge_prompt"} <= set(PROMPT_NAMES)
+
+
+def tokens(text: str) -> list[str]:
+    """Words and punctuation marks, sorted: equal for two texts that differ only in order."""
+    return sorted(re.findall(r"\w+|[^\w\s]", text))
+
+
+with open(DATA_JUDGE_PROMPTS, encoding="utf-8") as f:
+    VARIANTS = {name: p["variant"] for name, p in json.load(f).items() if "derived_from" in p}
+
+
+@pytest.mark.parametrize("name", sorted(VARIANTS))
+def test_variant_keeps_the_output_format(name: str) -> None:
+    """A variant must be read exactly like its base prompt, or judgings can't be compared."""
+    variant = load_judge_prompt(name)
+    base = load_judge_prompt(variant["derived_from"])
+    assert variant["variant"] in ("permuted", "synonyms"), variant["variant"]
+    assert variant["system_template"] != base["system_template"]
+    assert variant["output"] == base["output"]
+
+
+@pytest.mark.parametrize("name", sorted(n for n, v in VARIANTS.items() if v == "permuted"))
+def test_permuted_prompt_only_reorders(name: str) -> None:
+    """A permuted variant claims to be its base prompt reordered, nothing added or dropped;
+    otherwise a changed verdict can't be blamed on order alone."""
+    variant = load_judge_prompt(name)
+    base = load_judge_prompt(variant["derived_from"])
+    assert tokens(variant["system_template"]) == tokens(base["system_template"])
+    assert variant["user_template"] == base["user_template"]
 
 
 @pytest.mark.parametrize("name", PROMPT_NAMES)

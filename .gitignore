@@ -21,8 +21,5 @@ __pycache__/
 
 # for now ignore logs (needs final decision in future)
 /logs
-# upstream InstrumentalEval main.py, downloaded and hash-checked by build_data.py; only parsed
-data/input/InstrumentalEval_main.py.txt
-
 # written by `ic-serve up`: model and connection settings of the current GPU session
 serve_session.env

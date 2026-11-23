@@ -71,8 +71,10 @@ def add_verdicts(judgings: pd.DataFrame, positive: str, threshold: float) -> pd.
     out.loc[out["judge_stop_reason"] != "stop", "raw_verdict"] = None
     out["verdict"] = [binary_verdict(raw, positive, threshold) for raw in out["raw_verdict"]]
     names = out["judge_model"].str.split("/").str[-1] + " | " + out["judge_prompt"]
-    # The same judge and prompt run twice (e.g. a test-retest) must stay two columns.
-    runs_per_name = out.groupby(names)["judge_run_id"].transform("nunique")
+    # The same judge and prompt run twice on the same generation run (a test-retest of the
+    # judge) must stay two columns; across generation runs the name stays the same, so the
+    # trend lines up (first version grouped by name only and split every column).
+    runs_per_name = out.groupby([out["gen_run_id"], names])["judge_run_id"].transform("nunique")
     out["judging"] = names.where(runs_per_name == 1, names + " #" + out["judge_run_id"].str[:6])
     return out
 

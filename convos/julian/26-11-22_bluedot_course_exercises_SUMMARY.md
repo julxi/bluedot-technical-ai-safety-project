@@ -1,6 +1,6 @@
 # SUMMARY: BlueDot course exercises
 
-**Last updated:** 26-11-23 (next experiment: the trend over SFT, DPO, step 200, final; ic-serve switch and HF token implemented)
+**Last updated:** 26-11-23 (trend experiment done: SFT, DPO, final with Phi-4 and both judge prompts)
 
 Julian put the BlueDot Technical AI Safety course's exercises and readings in `docs/project logs/` and wants to discuss them. That folder is a human zone (its README says no agent writes there): Julian's answers go there, the discussion goes into this LOG.
 
@@ -37,11 +37,12 @@ Asks for: (1) get the code running or replicate the finding once; (2) at least f
 - **Analysis (stage 3 done 26-11-23)** [verified: `make check` 113 tests]: `uv run python -m ic_eval.analysis.report` loads generation and judge logs into pandas tables, parses verdicts (one tolerant-but-strict parser for all prompts; threshold and positive value are report options), prints rates, per-category rates and pairwise agreement (Cohen's kappa), and writes `data/analysis/<gen run id>_to_read.md` (disagreements + 15 random agreements).
 - **First comparison** [verified: report 26-11-23; one greedy run of the final 7B, judge Phi-4 only, no human check]: etpm judge prompt 29/76 (38%), qic judge prompt 18/76 (24%); agreement 85.5%, kappa 0.67; all 11 disagreements are etpm yes / qic no. Most flags in hiding, aligned, shutdown. Same judge model, so the prompt alone moves the rate [concluded, tentative]; validity needs other judges and reading. Not comparable with the paper's 11.84%.
 
-- **Next experiment: the trend** [concluded, agreed with Julian 26-11-23]: generate (greedy, full length, `--tags reference`) on SFT, DPO and step 200 in one rental, switching models with `ic-serve switch`; optionally a second greedy run of the final checkpoint as a noise yardstick; then judge all with Phi-4 (both prompts) and run the report. Can show a large rise-and-fall or its absence, not ~10-point differences (one greedy reply per task, 76 tasks). Session commands: LOG entry *trend experiment; ic-serve switch and HF token*.
+- **Trend experiment, first result** [verified: report 26-11-23; one greedy reply per task, judge Phi-4 only, unvalidated; step 200 and a retest dropped by Julian]: rates SFT / DPO / final = 30.6 / 43.4 / 38.2% (etpm judge prompt) and 18.1 / 31.6 / 23.7% (qic prompt); paper 25.0 / 38.2 / 11.8%. The SFT → DPO rise replicates (+13 points, McNemar p = 0.022 qic, 0.078 etpm). The paper's headline, final well below SFT, does not appear: final is at or above SFT, flips SFT → final 5 lost / 11 gained (paper 13 / 3), not significant. 4/76 SFT replies looped to 16,000 tokens without an answer. Consistent with, not a test of, the 1,024-token truncation hypothesis. LOG entries *trend session, part 1* and *part 2*.
 - **`ic-serve switch` and HF token** [implemented 26-11-23, `make check` 115 tests; not yet run for real]: `HF_TOKEN` from `.env`, checked with Hugging Face before renting, installed on the instance over ssh stdin (mode 600, `/etc/profile.d/`); `up` installs it before vLLM starts; `switch` stops vLLM, waits for a free GPU, starts another checkpoint and rewrites `serve_session.env`.
 
-Open: Julian adds `HF_TOKEN` to `.env` and runs the trend session; a trend table across checkpoints in the report; Julian reads the reading file; whether `data/analysis/` is committed; more judge models; Julian's predictions and when to open the sealed ones.
+Open: a second judge model; sampled replies per task for noise; step 200; reading the disagreements; McNemar tests into the report; Julian's predictions and when to open the sealed ones.
 
 - LOG: `convos/julian/26-11-22_bluedot_course_exercises_LOG.md`
 - See also: `convos/julian/26-11-16_rlvr_instrumental_convergence_SUMMARY.md` — the research direction and the known weaknesses of arXiv 2610.31624; the main source for the assumption list.
+- See also: `convos/julian/26-11-23_judge_reliability_SUMMARY.md` — tests of whether the Phi-4 judgings behind the trend result can be trusted; first result: the trend holds under a repeated, a reordered and a synonym-paraphrased qic prompt (Phi-4 only).
 - See also: `convos/julian/26-11-21_instrumental_eval_harness_SUMMARY.md` — the harness that covers "get it working", the throughput numbers behind the compute estimate, and the open judge settings.

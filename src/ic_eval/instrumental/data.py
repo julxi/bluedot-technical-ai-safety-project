@@ -1,8 +1,13 @@
 """Load a benchmark dataset JSON from data/input/ (e.g. etpm.json) into Inspect samples.
 
 Which file belongs to which dataset name is decided by the generation task (tasks/generate.py).
-The JSONs are git-tracked; `build_data.py` made them. Eval runs only read them here and never
-touch the network. Each JSON names itself in its `dataset` field ({name, description}).
+The JSONs are git-tracked and final: a one-off script made them from upstream's benchmark CSVs
+(repository, commit and file names recorded in each JSON); script and CSV copies were then
+deleted (last version: `git show 954d465:src/ic_eval/instrumental/build_data.py`).
+Eval runs only read them here and never touch the network. Upstream InstrumentalEval has no
+license file (checked 26-11-22), so committing its data is redistribution without explicit
+permission; check before going public.
+Each JSON names itself in its `dataset` field ({name, description}).
 """
 
 import json
