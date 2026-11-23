@@ -30,6 +30,11 @@ Write down as many assumptions as you can — aim for at least five. These might
 - The impact: If I got the result I'm hoping for, who would care? Would it change how someone builds or evaluates an AI system?
 
 Answer:
+- The existing work: I don't know if the findings are robust. I doubt it though. Issues with the codebase are the token limitations.
+- The data: Quality of the data depends on the eval itself. I don't think that eval 
+- The method: I'm not sure that this style of simple Evals can accurately measure instrumental convergence. Though it might work for the simple models that we're dealing with
+- The tools and resources: I'm a bit afraid that the judging will be expensive in the end.
+- The impact: not clear what the result would be. I don't think it will change much. 
 
 
 # Deciding what to test first

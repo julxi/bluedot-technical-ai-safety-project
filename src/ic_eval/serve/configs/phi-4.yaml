@@ -1,0 +1,9 @@
+# Microsoft Phi-4 (14.7B, MIT, not gated, no thinking mode), first judge model.
+# Use: ic-serve up phi-4 [--machine 48gb]
+reasoning_parser: none
+max_model_len: 16384          # Phi-4's own context length; vLLM refuses more
+client_timeout: 3600
+# Judge request ≈ 2,000 tokens in + 100-200 out (estimate 26-11-23, not yet measured).
+tokens_per_request: 2300
+checkpoints:
+  default: {model: microsoft/phi-4, revision: main}

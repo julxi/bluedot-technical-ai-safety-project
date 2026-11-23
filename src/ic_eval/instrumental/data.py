@@ -1,24 +1,31 @@
-"""Load the InstrumentalEval benchmark from data/input/instrumental_eval.json.
+"""Load a benchmark dataset JSON from data/input/ (e.g. etpm.json) into Inspect samples.
 
-The JSON is git-tracked; `build_data.py` made it from the upstream repository. Eval runs only
-read it here and never touch the network.
+Which file belongs to which dataset name is decided by the generation task (tasks/generate.py).
+The JSONs are git-tracked; `build_data.py` made them. Eval runs only read them here and never
+touch the network. Each JSON names itself in its `dataset` field ({name, description}).
 """
 
 import json
+from pathlib import Path
+from typing import Any
 
 from inspect_ai.dataset import Sample
 
-from ic_eval.paths import DATA_INPUT_DIR
 
-JSON_PATH = DATA_INPUT_DIR / "instrumental_eval.json"
+def load_json(path: Path) -> dict[str, Any]:
+    with open(path, encoding="utf-8") as f:
+        return json.load(f)
 
 
-def load_samples(category: str | None = None) -> list[Sample]:
-    """All benchmark samples, or only those of one category."""
+def load_samples(path: Path, category: str | None = None) -> list[Sample]:
+    """All samples of the dataset JSON at `path`, or only those of one category.
 
-    with open(JSON_PATH, encoding="utf-8") as f:
-        data = json.load(f)
+    Sample metadata: `category`, `title` (shutdown scenario title, else None) and
+    `judge_context` (the category description that judges get). The dataset name is not
+    repeated per sample: it is a task argument, recorded once in the log header.
+    """
 
+    data = load_json(path)
     selected = [c for c in data["categories"] if category is None or c["id"] == category]
 
     if not selected:
@@ -40,7 +47,6 @@ def load_samples(category: str | None = None) -> list[Sample]:
     ]
 
 
-def load_system_prompt() -> str:
-    with open(JSON_PATH, encoding="utf-8") as f:
-        data = json.load(f)
-    return data["system_prompt"]["text"]
+def load_system_prompt(path: Path) -> str:
+    """The tested model's system prompt stored with the dataset."""
+    return load_json(path)["system_prompt"]["text"]

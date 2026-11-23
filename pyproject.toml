@@ -8,6 +8,7 @@ dependencies = [
     "fire>=0.7.1",
     "inspect-ai>=0.3.291",
     "openai>=3.55.0",
+    "pandas>=3.1.1",
     "pydantic>=2.14.3",
     "python-dotenv>=1.2.4",
     "pyyaml>=6.0.3",
@@ -17,6 +18,8 @@ dependencies = [
 [project.scripts]
 # Rent and prepare vast.ai GPUs; see src/ic_eval/vast/cli.py.
 ic-vast = "ic_eval.vast.cli:cli"
+# Serve a model with vLLM on a rented GPU and write serve_session.env; see src/ic_eval/serve/cli.py.
+ic-serve = "ic_eval.serve.cli:main"
 
 [build-system]
 # Makes `uv sync` install src/ic_eval/ (editable) and create the ic-vast command in .venv/bin.
@@ -30,6 +33,7 @@ module-name = "ic_eval"
 [dependency-groups]
 dev = [
     "basedpyright>=1.40.2",
+    "pandas-stubs>=3.1.0.261029",
     "pytest>=9.2.0",
     "ruff>=0.17.5",
 ]

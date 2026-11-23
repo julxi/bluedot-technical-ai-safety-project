@@ -1,0 +1,13 @@
+# Olmo 3 7B Think, the tested model of the project (arXiv 2610.31624 studies its checkpoints).
+# Use: ic-serve up olmo-3-7b-think --checkpoint <name> [--machine 48gb]
+reasoning_parser: olmo3
+max_model_len: 32768          # the model card's recommendation for Think
+client_timeout: 3600
+# 116,346 cache tokens on an RTX A6000 / 32 = optimum measured 26-11-22 (generation, replies of
+# ~2,000 tokens; 64 at once filled the cache and slowed the run).
+tokens_per_request: 3600
+checkpoints:
+  sft:       {model: allenai/Olmo-3-7B-Think-SFT, revision: main}
+  dpo:       {model: allenai/Olmo-3-7B-Think-DPO, revision: main}
+  step_0200: {model: allenai/Olmo-3-7B-Think,     revision: step_0200}
+  final:     {model: allenai/Olmo-3-7B-Think,     revision: main}

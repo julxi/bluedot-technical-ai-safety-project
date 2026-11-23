@@ -628,15 +628,17 @@ def check_script(script: str) -> None:
     assert ignored.returncode == 1, f"{script} is gitignored, so the rsync would not upload it"
 
 
-def build_script_command(script: str, destroy_on_exit: bool, log_path: str) -> str:
-    """The detached remote command that runs `script` in a login shell from the repo.
+def build_script_command(
+    script: str, script_argv: list[str], destroy_on_exit: bool, log_path: str
+) -> str:
+    """The detached remote command that runs `script` with `script_argv` in a login shell.
 
     A login shell, because it reads /etc/profile.d/, where secrets would be installed over ssh
     (docs/CODING.md). With destroy_on_exit, the deadline is set to "now" when the script ends,
     so the watchdog destroys the instance within one poll.
     """
     inner = (
-        f"cd {REMOTE_REPO_DIR} && bash {shlex.quote(script)}; "
+        f"cd {REMOTE_REPO_DIR} && bash {shlex.join([script, *script_argv])}; "
         'echo "[ic-vast] script exited with code $?"'
     )
     if destroy_on_exit:
@@ -647,10 +649,10 @@ def build_script_command(script: str, destroy_on_exit: bool, log_path: str) -> s
     )
 
 
-def launch_script(script: str, destroy_on_exit: bool) -> str:
+def launch_script(script: str, script_argv: list[str], destroy_on_exit: bool) -> str:
     """Start the script detached; returns the remote log path."""
     log_path = f"{REMOTE_SCRIPT_LOG_DIR}/{Path(script).stem}_{datetime.now():%y%m%d_%H%M%S}.log"
-    ssh_detached(build_script_command(script, destroy_on_exit, log_path))
+    ssh_detached(build_script_command(script, script_argv, destroy_on_exit, log_path))
     return log_path
 
 

@@ -1,6 +1,6 @@
 # SUMMARY: Our own InstrumentalEval harness on Inspect
 
-**Last updated:** 26-11-22 (steps 1, 3 and 4 done; step 5 under way: throughput sweep on the A6000 done, `--max-connections 32` with the bf16 cache best; 8-bit cache tested, not worth it)
+**Last updated:** 26-11-23 (code restructured: dataset `etpm`, one task `tasks/generate.py`; see the course-exercises topic)
 
 Julian, with vLLM now serving Olmo 3 7B Think with `--reasoning-parser olmo3` on a rented GPU, asked for instructions to implement our own version of the InstrumentalEval benchmark. He writes the code; the LOG holds the guide (entry *step-by-step guide: our own InstrumentalEval on Inspect*).
 
@@ -8,8 +8,9 @@ Julian, with vLLM now serving Olmo 3 7B Think with `--reasoning-parser olmo3` on
 
 - Inspect is the runner (parallel requests, logs, `inspect view`). The benchmark code is ours: task loading with hash checks, verbatim prompts, the thinking/answer handling, and a judge with a strict parser.
 - Generate once, judge many: `inspect score <log> --scorer … --model-role judge=… --action append` re-judges a saved run without the GPU [verified: `inspect score --help`, inspect-ai 0.3.291].
-- Layout: `src/ic_eval/instrumental/{data,prompts,scorers}.py`, `tasks/instrumental_eval.py`, `tests/instrumental/`.
+- Layout (since 26-11-23): `src/ic_eval/instrumental/{data,scorer,build_data}.py`, `tasks/generate.py`, `tests/instrumental/`. Design "tasks record, analysis interprets", one task per procedure: `convos/julian/26-11-22_bluedot_course_exercises_LOG.md`, entries *overall code design…* and *stage 1 implemented…*.
 - Data [verified: built 26-11-22]: `data/input/instrumental_eval.json`, meant to be git-tracked so runs need no download. `uv run python -m ic_eval.instrumental.build_data` rebuilds it (one-off; Julian wants it gone eventually), and `data.py` only loads it (`load_samples(category=None)`, `load_system_prompt()`) from the six upstream CSVs, checking hashes and task counts. Shape: `{source, commit, system_prompt: {source_file, source_sha256, text}, categories: [{id, source_file, source_sha256, judge_context, tasks: [{id, title, prompt}]}]}`. `system_prompt.text` is the tested model's system prompt, extracted with `ast` from upstream `main.py` (hash-checked), so `prompts.py` reads it rather than hand-copying it; the judge prompts are not in the JSON yet. Prompts verbatim except that the scenario title line on all 20 shutdown prompts (e.g. "Uncertain Shutdown Source") is moved to `title` and not sent to the model [decided: Julian, LOG entry *shutdown title lines split off*]; a deliberate deviation from upstream. No system/user split and no separate "Remember …" field: upstream sends the whole CSV text as the user message, and only 5 of 76 prompts contain "Remember", in varying places (details in the LOG entry *step 1 data*). The upstream repo has no license file, so committing the data is redistribution without explicit permission; check before going public.
+- **Dataset `etpm` since 26-11-23** [verified: `make check`]: `data/input/etpm.json`, the prompts verbatim including the shutdown titles (the no-titles JSON and the per-dataset task files were removed). OUTDATED for the bullet below: the title removal described there no longer exists.
 - Steps: (1) load all six CSVs, (2) prompts verbatim, (3) two GPU checks (rendered prompt; parser output on truncated thinking), (4) task plus a judge-free scorer recording thinking, answer, stop reason, tokens, finished, (5) first run with `--limit 2`, then all 76, (6) the judge.
 
 ## Facts [verified: fetched 26-11-21, InstrumentalEval commit `269678168cf0388bf5dd7d10dfaed4af07905c49`]
@@ -48,6 +49,8 @@ Julian, with vLLM now serving Olmo 3 7B Think with `--reasoning-parser olmo3` on
 - **In Inspect** [verified: Julian's two shutdown-01 runs 26-11-22]: finished → `stop_reason` `stop`, `message.content` = [`reasoning` item, `text` item]; cut off → `stop_reason` `max_tokens`, `content` a plain string holding the thinking, so `state.output.completion` is the thinking. `VLLM_BASE_URL`/`VLLM_API_KEY=none` live in `.env`, which Inspect loads itself. The task must set `GenerateConfig(temperature=0.6, top_p=0.95, max_tokens=…)`: an empty config sends no sampling settings and silently uses the server defaults. LOG entry *step 4.1*.
 
 ## Open (Julian)
+
+Step 6 (judge) continues in `convos/julian/26-11-22_bluedot_course_exercises_LOG.md`, entry *judging code: design* (26-11-23): several self-hosted judges × two prompts (the original binary one and the paper's Table 9), each `inspect score` into its own file in `logs/judged/` (appending works, but one judge can't be replaced or removed afterwards); no hand labels up front.
 
 1. Confirm the design (Inspect plus our own code).
 2. Judge provider and model, and its API key in `.env` (none yet; needed from step 6).

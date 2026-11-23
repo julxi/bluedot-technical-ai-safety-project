@@ -4,6 +4,8 @@
 # VLLM_BASE_URL=http://localhost:8000/v1 from .env.
 #
 # Usage: bash scripts/laptop/gpu_up.sh [extra `ic-vast rent` options, e.g. --timer 3h --config h200]
+#   Another checkpoint: --script_args "allenai/Olmo-3-7B-Think-SFT main" (model, revision, and
+#   optionally the reasoning parser; see scripts/vm/serve_vllm.sh). Default: final 7B Think, main.
 # End the session: uv run ic-vast destroy   (records the rental, then destroys the instance)
 # Close the tunnel only: pkill -f "[l]ocalhost:8000 bluedot-vast"
 set -euo pipefail
@@ -45,6 +47,8 @@ until curl -sf "localhost:$PORT/health" >/dev/null; do
   sleep 10
 done
 
-echo "[gpu_up] vLLM is up after $((SECONDS / 60)) min $((SECONDS % 60)) s in total. Models:"
-curl -s "localhost:$PORT/v1/models"
-echo
+echo "[gpu_up] vLLM is up after $((SECONDS / 60)) min $((SECONDS % 60)) s in total."
+# The served name is derived on the instance (serve_vllm.sh); Inspect needs it in --model.
+SERVED=$(curl -s "localhost:$PORT/v1/models" | python3 -c "import json, sys; print(*[m['id'] for m in json.load(sys.stdin)['data']])")
+echo "[gpu_up] serving: $SERVED"
+echo "[gpu_up] use: --model openai-api/vllm/$SERVED"

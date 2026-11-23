@@ -8,6 +8,7 @@
     ic-vast rent --config h200 --hours 4  # src/ic_eval/vast/configs/h200.yaml, 4 h session
     ic-vast rent --offer_id 123           # this offer, no choice, no re-rent
     ic-vast rent --script scripts/vm/x.sh # ... then run that repo script on the instance
+    ic-vast rent --script scripts/vm/x.sh --script_args "a b"  # ... with arguments
     ic-vast rent --dry_run                # show the choice, rent nothing
     ic-vast timer [2h|90m|off]            # show or change the self-destruct timer
     ic-vast sync [--allow_delete]         # upload the working tree again (HEAD must be pushed)
@@ -20,6 +21,7 @@ it, and a slow or failed host is given up on and the next offer rented automatic
 """
 
 import json
+import shlex
 import subprocess
 import time
 from datetime import datetime
@@ -162,6 +164,7 @@ def offers(
 
 def rent(
     script: str | None = None,
+    script_args: str | None = None,
     config: str = DEFAULT_CONFIG,
     mode: str = DEFAULT_MODE,
     hours: float | None = None,
@@ -188,6 +191,8 @@ def rent(
         script: Repo-relative bash script (.sh, by convention in scripts/vm/) to run on the
             instance once ready, detached, in a login shell from /root/bluedot; output in
             /root/bluedot/logs/remote/.
+        script_args: Arguments for the script, as one shell-quoted string (split with shlex),
+            e.g. 'allenai/Olmo-3-7B-Think-SFT main' for scripts/vm/serve_vllm.sh.
         config: Machine config: a short name ('h200' -> configs/h200.yaml) or a YAML path.
         mode: How to choose among offers. exploit: lowest expected cost. balance (default):
             mostly exploit, now and then try a host the model knows little about. explore: try
@@ -220,6 +225,13 @@ def rent(
     policy = load_policy_config()
     timer_s = parse_duration(machine.timer)
     assert not (destroy_on_exit and script is None), "--destroy_on_exit needs --script"
+    assert not (script_args is not None and script is None), "--script_args needs --script"
+    # fire turns values that look like Python literals into numbers or lists; only a string is
+    # meant here, so anything else is a quoting mistake on the command line.
+    assert script_args is None or isinstance(script_args, str), (
+        f"--script_args must be one string, got {script_args!r}"
+    )
+    script_argv = shlex.split(script_args) if script_args is not None else []
     if script is not None:
         check_script(script)
     log(f"vastai CLI {check_cli()}")
@@ -298,6 +310,7 @@ def rent(
             git_state=git_state,
             timer_s=timer_s,
             script=script,
+            script_argv=script_argv,
             destroy_on_exit=destroy_on_exit,
             skip_probes=skip_probes,
         )
@@ -505,6 +518,7 @@ def _run_attempt(
     git_state: LocalGitState,
     timer_s: int | None,
     script: str | None,
+    script_argv: list[str],
     destroy_on_exit: bool,
     skip_probes: bool,
 ) -> bool:
@@ -611,7 +625,7 @@ def _run_attempt(
         }
     )
     if script is not None:
-        log_path = launch_script(script, destroy_on_exit)
+        log_path = launch_script(script, script_argv, destroy_on_exit)
         log(f"Script started. Follow with: ssh {SSH_HOST_ALIAS} tail -f {log_path}")
     return True
 

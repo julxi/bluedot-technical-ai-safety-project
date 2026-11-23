@@ -80,7 +80,7 @@ Structure hints:
 
 ## Rented vast.ai GPUs
 
-**Scripts are split by where they run** (Julian, 26-11-22): `scripts/vm/` runs on the rented instance (e.g. `serve_vllm.sh`, passed to `ic-vast rent --script`), `scripts/laptop/` runs on the laptop (e.g. `gpu_up.sh`: rent, start vLLM, open the tunnel, wait until it answers). Put a new script in the folder matching where it runs.
+**Scripts are split by where they run** (Julian, 26-11-22): `scripts/vm/` runs on the rented instance (e.g. `serve_vllm.sh`, passed to `ic-vast rent --script`), `scripts/laptop/` runs on the laptop. Serving a model on a rented GPU is the `ic-serve` command (`src/ic_eval/serve/`, configs per model in `src/ic_eval/serve/configs/`), which replaces `scripts/laptop/gpu_up.sh`. Put a new script in the folder matching where it runs.
 
 Rent with `uv run ic-vast rent` (package `src/ic_eval/vast/`; all commands in `cli.py`'s module docstring), and end the session with `ic-vast destroy`, which records it before destroying. `rent` chooses the host with a Bayesian model of past rentals and re-rents automatically when a host is slow or fails. It writes the ssh alias `bluedot-vast` and arms a self-destruct timer on the instance (`ic-vast timer`).
 
