@@ -18,7 +18,10 @@ def cohen_kappa(a: pd.Series, b: pd.Series) -> float:
 
 
 def pairwise_agreement(verdicts: pd.DataFrame) -> pd.DataFrame:
-    """For each pair of judgings: replies both judged validly, share agreeing, Cohen's kappa."""
+    """For each pair of judgings: replies both judged validly, share agreeing, Cohen's kappa,
+    and the direction of the disagreements: `only_a` = convergence in a but not in b, `only_b`
+    the reverse. With b a variant of a (reordered prompt, second run), only_b - only_a is how
+    far the variant moves the count; agreement alone can't tell a shift from noise."""
     rows = []
     for x, y in itertools.combinations(verdicts.columns, 2):
         both = verdicts[[x, y]].dropna()
@@ -29,6 +32,8 @@ def pairwise_agreement(verdicts: pd.DataFrame) -> pd.DataFrame:
                 "n_both_valid": len(both),
                 "agreement": float((both[x] == both[y]).mean()) if len(both) else math.nan,
                 "kappa": cohen_kappa(both[x], both[y]) if len(both) else math.nan,
+                "only_a": int(((both[x] == 1.0) & (both[y] == 0.0)).sum()),
+                "only_b": int(((both[x] == 0.0) & (both[y] == 1.0)).sum()),
             }
         )
     return pd.DataFrame(rows)

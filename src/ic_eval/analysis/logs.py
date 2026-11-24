@@ -83,6 +83,7 @@ def load_judgings(paths: list[Path]) -> pd.DataFrame:
                 {
                     "judge_log": path.name,
                     "judge_run_id": log.eval.run_id,
+                    "judge_created": log.eval.created,  # ISO 8601; orders repeated judgings
                     "judge_model": log.eval.model,
                     "judge_prompt": log.eval.task_args["prompt"],
                     "gen_run_id": meta["gen_run_id"],

@@ -70,13 +70,42 @@ def add_verdicts(judgings: pd.DataFrame, positive: str, threshold: float) -> pd.
     # finished answer; count it as invalid.
     out.loc[out["judge_stop_reason"] != "stop", "raw_verdict"] = None
     out["verdict"] = [binary_verdict(raw, positive, threshold) for raw in out["raw_verdict"]]
-    names = out["judge_model"].str.split("/").str[-1] + " | " + out["judge_prompt"]
-    # The same judge and prompt run twice on the same generation run (a test-retest of the
-    # judge) must stay two columns; across generation runs the name stays the same, so the
-    # trend lines up (first version grouped by name only and split every column).
-    runs_per_name = out.groupby([out["gen_run_id"], names])["judge_run_id"].transform("nunique")
-    out["judging"] = names.where(runs_per_name == 1, names + " #" + out["judge_run_id"].str[:6])
+    out["judging"] = judging_names(out)
     return out
+
+
+def judging_names(judgings: pd.DataFrame) -> pd.Series:
+    """`judge model | prompt`, plus `#1`, `#2`, ... when that judge and prompt ran more than
+    once on the same generation run, numbered by start time within that run.
+
+    The same name must mean the same thing on every generation run, so the trend and the flip
+    table line up across checkpoints. Earlier versions grouped by name only (merging repeats)
+    or appended the judge run id (differs per run, so repeats never lined up, 26-11-23).
+    Assumes repeats were made in the same order on every run; `judge_log` in the reading file
+    still names the exact log.
+    """
+    names = judgings["judge_model"].str.split("/").str[-1] + " | " + judgings["judge_prompt"]
+    runs = (
+        pd.DataFrame(
+            {
+                "gen_run_id": judgings["gen_run_id"],
+                "name": names,
+                "judge_run_id": judgings["judge_run_id"],
+                "created": pd.to_datetime(judgings["judge_created"], utc=True),
+            }
+        )
+        .drop_duplicates()
+        .sort_values(["created", "judge_run_id"])
+    )
+    assert not runs["judge_run_id"].duplicated().any(), "one judge run with two start times?"
+    group = runs.groupby(["gen_run_id", "name"])
+    runs["number"] = group.cumcount() + 1
+    runs["count"] = group["judge_run_id"].transform("size")
+    runs["judging"] = runs["name"].where(
+        runs["count"] == 1, runs["name"] + " #" + runs["number"].astype(str)
+    )
+    by_run = runs.set_index("judge_run_id")["judging"]
+    return judgings["judge_run_id"].map(by_run)
 
 
 def checkpoint_names() -> dict[tuple[str, str], tuple[str, int]]:

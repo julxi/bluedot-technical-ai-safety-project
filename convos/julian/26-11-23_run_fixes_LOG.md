@@ -43,3 +43,32 @@ The numbers for the invariance run (flips of permuted and synonyms against the s
 ## Order
 
 1 (costs money on every rental), 2, 4, then 3 if wanted.
+
+---
+
+C: (transcribed from chat) Go ahead and do all 3 [interrupted] I meann 4
+
+---
+
+26-11-23, Claude Opus 5.5 — *all four fixes done*; context: same session; read `docs/CODING.md`, `tests/vast/test_script_command.py`, `tests/analysis/test_report.py`, `src/ic_eval/analysis/{logs,agreement}.py`, `tests/conftest.py` (judge fixtures).
+
+**1. Launch command** (`src/ic_eval/vast/remote.py`):
+- `build_script_command` now emits `mkdir -p <dir> || exit 1; setsid nohup bash -lc '…' > <log> 2>&1 < /dev/null &`; the docstring says why `&&` must not be used there.
+- The old form had a second, silent bug: a failing mkdir still let the command exit 0 (the backgrounded list's status is not waited for), so the script would never start and nothing would complain.
+- `ssh_detached` sends stdout to DEVNULL (partial guard; stderr kept for connection errors; docstring says so).
+- Tests (`tests/vast/test_script_command.py`), run locally with `bash -c`, no ssh: the launch returns in < 1 s while a 3 s script runs, and the script still finishes with exit code 0 in its log; a mkdir failure fails the launch. Both fail against the old form [verified: temporarily restored the old `&&`, 2 failed, then put the fix back].
+- `docs/CODING.md` §Rented vast.ai GPUs, rule *Detach long jobs*: added "nothing before it with `&&` either", with the working form.
+- Not verified on a real rental yet: the next `ic-serve up` run should end by itself after "wrote serve_session.env".
+
+**2. Repeated judgings** (`src/ic_eval/analysis/report.py`, `logs.py`):
+- `load_judgings` adds `judge_created` (the log's start time).
+- New `judging_names`: `<judge> | <prompt>`, plus `#1`, `#2`, … by start time (parsed as UTC times, not strings) when the same judge and prompt ran more than once on a generation run.
+- Test with fake judgings on an SFT and a final run, run ids chosen so that sorting by id gives the wrong order, start times in two time zones: names line up, trend columns are full, both repeats appear in the SFT → final flip table. It fails under the old naming [verified: old function monkeypatched in a scratch copy, 1 failed].
+
+**3. Direction in the agreement table** (`src/ic_eval/analysis/agreement.py`): `pairwise_agreement` adds `only_a` (convergence in a only) and `only_b`. Test with a hand-made table.
+
+**Check on the real logs** [verified: report 26-11-23]: the report now reproduces every number of the scratch script in the judge-reliability LOG (entry *first invariance run…*): rates per checkpoint for `qic_judge_prompt #1` (the trend session's judging) and `#2` (today's repeat), and only_a/only_b for #1→#2, #2→permuted and #2→synonyms on all three checkpoints. New: the SFT → final flip table now has both qic repeats (#1: 4 lost / 8 gained; #2: 4 / 6).
+
+**4. Harness SUMMARY**: Data bullet rewritten to current state (`etpm.json`, its shape [verified: loaded], built once, `build_data.py` and CSVs deleted, titles kept verbatim; the old title-split decision marked superseded); the separate OUTDATED bullet merged into it.
+
+`make check`: format, lint, basedpyright 0/0, 126 tests passed [verified: 26-11-23].

@@ -468,11 +468,18 @@ def ssh_input(remote_command: str, text: str) -> None:
 
 
 def ssh_detached(remote_command: str) -> None:
-    """Start a remote background command and return at once (see `_start_watchdog`)."""
+    """Start a remote background command and return at once (see `start_watchdog`).
+
+    stdout goes to /dev/null, so a remote command that keeps the session open (see
+    `build_script_command`) holds at most our stderr, not stdout, via the forked `ssh -f`; a
+    caller reading only stdout then still sees the end. Only a partial guard: stderr is kept,
+    because connection and mkdir errors must stay visible; the real fix is the remote command.
+    """
     subprocess.run(
         ["ssh", *SSH_OPTS, "-n", "-f", SSH_HOST_ALIAS, remote_command],
         check=True,
         stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
     )
 
 
@@ -636,6 +643,12 @@ def build_script_command(
     A login shell, because it reads /etc/profile.d/, where secrets would be installed over ssh
     (docs/CODING.md). With destroy_on_exit, the deadline is set to "now" when the script ends,
     so the watchdog destroys the instance within one poll.
+
+    Intentionally `mkdir ... || exit 1; setsid ... &`, not `mkdir ... && setsid ... &`: `&&`
+    binds tighter than `&`, so the latter backgrounds the whole list as a subshell that keeps the
+    ssh session's stdout until the script ends. The local `ssh -f` then stays alive and holds its
+    caller's output pipe, so `ic-serve up | tee` never ended while vLLM ran (26-11-23,
+    convos/julian/26-11-23_run_fixes_LOG.md). `|| exit 1` keeps a failing mkdir an ssh error.
     """
     inner = (
         f"cd {REMOTE_REPO_DIR} && bash {shlex.join([script, *script_argv])}; "
@@ -644,7 +657,7 @@ def build_script_command(
     if destroy_on_exit:
         inner += f"; date +%s > {TIMER_DEADLINE}"
     return (
-        f"mkdir -p {REMOTE_SCRIPT_LOG_DIR} && setsid nohup bash -lc {shlex.quote(inner)} "
+        f"mkdir -p {REMOTE_SCRIPT_LOG_DIR} || exit 1; setsid nohup bash -lc {shlex.quote(inner)} "
         f"> {log_path} 2>&1 < /dev/null &"
     )
 

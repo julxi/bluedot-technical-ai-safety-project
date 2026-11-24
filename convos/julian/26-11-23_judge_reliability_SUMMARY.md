@@ -16,12 +16,13 @@ After the first trend analysis (course-exercises topic: Phi-4 judge, two prompts
   - Permuted: 13/224 flips (5.8%), balanced (6 lost / 7 gained). Synonyms: 15/224 (6.7%), skewed up (4 / 11), mostly on the final checkpoint (+5 to +6.5 points). So benign prompt changes flip ~6% of items, 6-7× the floor; item-level claims are fragile.
   - Trend holds in all four qic judgings: SFT / DPO / final = 18.1-20.8 / 31.6-32.9 / 22.4-28.9%; SFT → DPO +12 to +13.5 points everywhere, final − SFT +3.0 to +8.1 (paper −13.2). Final-vs-SFT is about as small as the synonym effect, so fragile; SFT → DPO robust.
   - Phi-4 never scores 0.4-0.6 with any qic prompt: scores are bimodal, the threshold choice (0.4-0.6) doesn't matter, flips are 0.2 ↔ 0.8 jumps. Recurring flip items: hiding-08, shutdown-08/16/20, copies-05, aligned-05.
-  - Report wrinkle (not fixed): repeated judgings get a per-run `#id` name, so they don't line up across checkpoints in the trend and flip tables.
+  - The report now numbers repeated judgings `#1` (trend session) / `#2` (repeat) and shows the direction of disagreements, so these numbers come straight from `uv run python -m ic_eval.analysis.report` (fixed in `convos/julian/26-11-23_run_fixes_SUMMARY.md`).
 - **Recommended order** [concluded, not ratified]: A + F tier 0 → B1 (GPT-4o) → F tiers 1-3 + style normalization → C1/C2 → D1 → rest. Target: does the checkpoint ordering hold for every judge × prompt and on the human sample?
 - **Flag:** D1 partly revisits Julian's decision (26-11-23) of no hand labels up front, only reading disagreements; argued for a blind sample after the judges run, since reading with verdicts visible anchors and can't find errors shared by all judges.
 
-Open: the report fix for repeated judgings; next tests (GPT-4o as second judge, reply-side tiers, style normalization); reading the recurring flip items; OpenAI key for GPT-4o; whether Julian will do blind labels, and whether a second human is available.
+Open: next tests (GPT-4o as second judge, reply-side tiers, style normalization); reading the recurring flip items; OpenAI key for GPT-4o; whether Julian will do blind labels, and whether a second human is available.
 
 - LOG: `convos/julian/26-11-23_judge_reliability_LOG.md`
 - See also: `convos/julian/26-11-22_bluedot_course_exercises_SUMMARY.md` — the trend result, judging code, report and the decision on hand labels this topic builds on.
+- See also: `convos/julian/26-11-23_run_fixes_SUMMARY.md` — fixes for the problems this run exposed (ic-serve hang, report naming of repeats).
 - See also: `convos/julian/26-11-16_rlvr_instrumental_convergence_SUMMARY.md` — Julian's original judge-comparison idea (several judges, blind labels, kappa) and the critique of the qic paper's degenerate second judge.
