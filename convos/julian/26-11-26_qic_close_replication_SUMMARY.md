@@ -1,0 +1,27 @@
+# SUMMARY: Replicating the qic paper's result without the cut-off
+
+**Last updated:** 26-11-26 (standalone report written: reports/qic_replication.typ)
+
+Julian wants to say something about the replicability of arXiv 2610.31624 ("qic": RLVR lowers instrumental convergence in Olmo 3 7B Think; their setting: 16 checkpoints, greedy, 1,024-token cap, GPT-4o judge at temperature 0 / 200 tokens, Table 9 prompt, threshold 0.5).
+
+- **Framing** [decided: Julian, transcribed 26-11-26]: replicate the paper's result without the 1,024-token cut-off; no flawed-setting runs. The 26-11-23 framing stands (course-exercises topic). An earlier gap list in the LOG assumed a close repeat including the cap; those parts are outdated.
+- **Julian's two changes:** more checkpoints (not all 16), GPT-4o as judge.
+- **Verified 26-11-26:** all 13 of the paper's RLVR step branches exist on Hugging Face; the `openai` package is already a dependency; `OPENAI_API_KEY` in `.env`, credits bought; one judge request through `tasks/judge.py` worked (`gpt-4o` → `gpt-4o-2024-08-06`, 656 in / 45 out tokens, parseable `SCORE:` reply) [verified 26-11-26]; recommended: pin `--model openai/gpt-4o-2024-08-06`. Cost reasoning: OpenAI's $5 minimum top-up, auto-recharge off; GPT-4o judging of all 6 checkpoints costs at most $2.03 at the 200-token output cap [verified: tiktoken count of the actual judge requests; price assumed from OpenAI's page via search]; batch mode not worth it (LOG entry *cheapest way to get GPT-4o working: $5 top-up*).
+- **Scope: bare minimum** [decided: Julian, transcribed 26-11-26], to show the paper's result doesn't hold and then do something better: one greedy run per checkpoint (no test-retest run), one GPT-4o judging per reply (no repeat); replies that don't finish are excluded (current judge behaviour; SFT 72/76); GPT-4o settings `--model openai/gpt-4o --temperature 0 --max-tokens 200`, `qic_judge_prompt`, answer only, threshold 0.5, resolved snapshot recorded; statistics and the "replicates" criterion not decided yet; the reported 14 Jan 2027 GPT-4o shutdown leaves enough time.
+- **Agent's caveat** [concluded, not ratified]: the minimum supports "doesn't replicate at full length with the paper's judge", not "the drop came from the cap" or item-level claims; a one-line criterion written before judging would cost nothing.
+- **Checkpoints** [decided: Julian, transcribed 26-11-26]: step_0200 (paper's peak, 46.05%), step_0800 (22.37%), step_1375 (17.11%) on top of the existing SFT, DPO, final; all three in `src/ic_eval/serve/configs/olmo-3-7b-think.yaml`.
+- **Generations done** [verified: logs 26-11-26; one A6000 rental, ≈ $0.49]: step 200 `logs/2026-11-26T20-32-03-00-00_generate_k4eYEPqXd8JkPZmzC48YfA.eval`, step 800 `logs/2026-11-26T20-41-02-00-00_generate_MycjHsH8EGcdEqRkpapDqx.eval`, step 1375 `logs/2026-11-26T20-50-31-00-00_generate_HSEWW6igHQjgUF2VUCnAo6.eval`; same settings as the SFT/DPO/final reference runs; all 76/76 finished, median output 1,882-1,947 tokens (SFT 1,498 with 4 loops, DPO 1,920, final 1,925). Tags `reference,qic-replication`.
+- **Result** [verified: GPT-4o judge logs + `scratch/gpt4o_qic_replication_26-11-26.py`, 26-11-26; interpretation concluded, not ratified; one greedy reply per task, one judging, no human labels] (LOG entry *GPT-4o judgings of six checkpoints: the paper's drop does not replicate*): GPT-4o (`gpt-4o-2024-08-06`, `qic_judge_prompt`, ≥ 0.5), 0 invalid. Rate (95% bootstrap CI) vs paper:
+  - SFT 34.7% [23.6, 45.8] (72 judged) vs 25.00; DPO 42.1 vs 38.16; step 200 42.1 vs 46.05; step 800 35.5 vs 22.37; step 1375 38.2 vs 17.11; final 38.2% [27.6, 50.0] vs 11.84 [5.26, 19.74].
+  - Final − SFT +4.2 points [−6.9, +15.3] (7 lost, 10 gained; paper −13.2, 13 lost, 3 gained). The paper's drop over RLVR is absent; SFT → DPO/step 200 rises +8.3 (CIs touching 0). Same picture with > 0.5 instead of ≥ 0.5 (four scores of exactly 0.5). Agrees with our six-judge result.
+  - Does not say why the paper got its numbers (no 1,024 runs) or anything per item.
+  - Cost $1.34 (464k input, 18k output tokens; price assumed).
+- **Report** (LOG entry *standalone report: reports/qic_replication.typ*): `reports/qic_replication.typ` → PDF with `typst compile`; tables and figure read `reports/data/qic_replication/*` written by `scripts/laptop/qic_replication_report.py` from the logs. Passed a cold-read self-contained check (sub-agent; all fixes applied). New in it: replies complete within 1,024 tokens at full length are 13 (SFT), 7 (DPO), 1-3 (RLVR steps, final) of 76, so the cap would cut nearly every later reply; the cap's effect, if any, would have to come from what the cut reasoning contains (untested). Outward-text voice pass not yet done (no voice profile).
+- **Optional:** GPT-4o with `etpm_judge_prompt` too (links to He et al.).
+- **Order:** config → OpenAI key → GPT-4o on the three existing logs → one rental (new checkpoints) → GPT-4o on those → analysis.
+
+Open (Julian): statistics / criterion (the paper's t-test / Wilcoxon not computed); whether to commit the PDF; voice profile before the final write-up.
+
+- LOG: `convos/julian/26-11-26_qic_close_replication_LOG.md`
+- See also: `convos/julian/26-11-22_bluedot_course_exercises_SUMMARY.md` — the full-length framing (decided 26-11-23), the existing SFT/DPO/final runs and the planned test-retest.
+- See also: `convos/julian/26-11-23_judge_reliability_SUMMARY.md` — our three judges and their repeat noise, the comparison point for GPT-4o.

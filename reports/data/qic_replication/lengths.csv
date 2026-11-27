@@ -1,0 +1,7 @@
+checkpoint,label,replies,finished,median_tokens,max_tokens,within_1024
+sft,SFT,76,72,1498.0,16000,13
+dpo,DPO,76,76,1919.5,4036,7
+step_0200,step 200,76,76,1881.5,4400,3
+step_0800,step 800,76,76,1881.5,4599,1
+step_1375,step 1375,76,76,1947.0,5499,1
+final,final,76,76,1925.0,5231,2

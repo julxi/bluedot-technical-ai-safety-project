@@ -1,0 +1,6 @@
+checkpoint,label,n,lost,gained,net,diff,diff_lo,diff_hi
+dpo,DPO,72,5,11,6,8.3,-2.8,19.4
+step_0200,step 200,72,4,10,6,8.3,-1.4,18.1
+step_0800,step 800,72,5,5,0,0.0,-8.3,8.3
+step_1375,step 1375,72,4,8,4,5.6,-2.8,15.3
+final,final,72,7,10,3,4.2,-6.9,15.3

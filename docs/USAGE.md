@@ -4,7 +4,7 @@ Design: tasks record, analysis interprets. There is one task per procedure (`tas
 
 ## Start the vm
 
-One command rents a GPU, serves a model there, opens the tunnel and writes `serve_session.env`. Models are configs in `src/ic_eval/serve/configs/` (`olmo-3-7b-think` with checkpoints `sft`, `dpo`, `step_0200`, `final`; `phi-4` as judge):
+One command rents a GPU, serves a model there, opens the tunnel and writes `serve_session.env`. Models are configs in `src/ic_eval/serve/configs/` (`olmo-3-7b-think` with checkpoints `sft`, `dpo`, `step_0200`, `step_0800`, `step_1375`, `final`; `phi-4` as judge):
 
 ```
 uv run ic-serve up olmo-3-7b-think --checkpoint final
@@ -65,6 +65,17 @@ Then one run per judge prompt (`-T prompt=etpm_judge_prompt` = the original Inst
 inspect eval tasks/judge.py -T gen_log=logs/<generate log>.eval -T prompt=etpm_judge_prompt
 ```
 
+Judges over Mistral's API (no GPU needed; also serves `deepseek-v4-1-flash-1017`). Inspect's `mistral/` provider reads `MISTRAL_API_KEY` (`.env` currently names it `MISTRAL_API_KEYS`, so copy it across or rename it):
+
+```
+export MISTRAL_API_KEY=...
+inspect eval tasks/judge.py -T gen_log=logs/<generate log>.eval -T prompt=qic_judge_prompt \
+    --model mistral/mistral-medium-2604 --max-connections 8
+```
+
+- use pinned names (`mistral-medium-2604`, `mistral-small-2603`, `ministral-14b-2512`, `deepseek-v4-1-flash-1017`), not `-latest` aliases; many names in Mistral's model list are aliases of one model (e.g. `magistral-medium-latest` = `mistral-medium-2604`)
+- `mistral-large-4` always reasons (no way to switch it off); add `--max-tokens 16000`, since at the task's 4,000 some replies end mid-reasoning with an empty answer, and Inspect's Mistral provider then reports stop reason `stop` instead of `max_tokens` (the empty answer still counts as invalid in the report)
+- the OpenAI-compatible route (`openai-api/mistral/...`) works for the non-reasoning models but crashes on `mistral-large-4`'s reasoning chunks
 - the judge task only records the judge's replies (no scores); reading them into verdicts and rates is the analysis' job
 - replies that were cut off during generation are skipped; the judge log lists them (task metadata `gen_skipped`)
 - the judge log's header names the generation run it judged (`gen_run_id`, `gen_model`)

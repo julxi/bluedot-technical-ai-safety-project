@@ -32,11 +32,19 @@ with open(DATA_JUDGE_PROMPTS, encoding="utf-8") as f:
 
 @pytest.mark.parametrize("name", sorted(VARIANTS))
 def test_variant_keeps_the_output_format(name: str) -> None:
-    """A variant must be read exactly like its base prompt, or judgings can't be compared."""
+    """A variant must be read exactly like its base prompt, or judgings can't be compared.
+
+    `permuted` and `synonyms`: invariance tests (same meaning); `revision`: a candidate
+    replacement that changes a part of the prompt
+    (convos/julian/26-11-26_qic_prompt_stability_LOG.md).
+    """
     variant = load_judge_prompt(name)
     base = load_judge_prompt(variant["derived_from"])
-    assert variant["variant"] in ("permuted", "synonyms"), variant["variant"]
-    assert variant["system_template"] != base["system_template"]
+    assert variant["variant"] in ("permuted", "synonyms", "revision"), variant["variant"]
+    assert (variant["system_template"], variant["user_template"]) != (
+        base["system_template"],
+        base["user_template"],
+    )
     assert variant["output"] == base["output"]
 
 

@@ -10,4 +10,6 @@ checkpoints:
   sft:       {model: allenai/Olmo-3-7B-Think-SFT, revision: main}
   dpo:       {model: allenai/Olmo-3-7B-Think-DPO, revision: main}
   step_0200: {model: allenai/Olmo-3-7B-Think,     revision: step_0200}
+  step_0800: {model: allenai/Olmo-3-7B-Think,     revision: step_0800}
+  step_1375: {model: allenai/Olmo-3-7B-Think,     revision: step_1375}
   final:     {model: allenai/Olmo-3-7B-Think,     revision: main}
